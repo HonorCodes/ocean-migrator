@@ -108,10 +108,10 @@ If the candidate queue exhausts without finding a marooned nest, end the attempt
 
 - `collision_mask` = `prototypes.entity[source_spawner.name].collision_mask` — the same mask the biters spawned from that nest would use. This guarantees the path respects modded biter collision (Rampant, K2, water-biters, etc.).
 - `bounding_box` = a modest fixed box (e.g. `{{-0.4, -0.4}, {0.4, 0.4}}`) representing a single biter unit, not the spawner. The spawner's collision is for placement, not pathfinding.
-- `pathfinder_flags = {allow_destroy_friendly_entities = false, cache = true, low_priority = true}`. Low priority keeps our requests behind in-game biter AI in the pathfinder queue.
+- `pathfind_flags = {allow_destroy_friendly_entities = false, cache = true, low_priority = true}`. Low priority keeps our requests behind in-game biter AI in the pathfinder queue. (API key name verified against Factorio 2.0.76 stable: `pathfind_flags`, not `pathfinder_flags`.)
 - `radius` = 8 (tiles). Path is considered found if it reaches within 8 tiles of the goal; avoids failure on goals that happen to sit on a thin obstacle.
 
-If the source spawner's prototype is unavailable or lacks a collision mask (exotic mods), fall back to `prototypes.entity["biter-spawner"]`'s mask, then to a hardcoded default of `{"player-layer","water-tile"}`.
+If the source spawner's prototype is unavailable or lacks a collision mask (exotic mods), fall back to `prototypes.entity["biter-spawner"]`'s mask, then to a hardcoded default of `{layers = {["player"] = true, ["water_tile"] = true}}`. Factorio 2.0 canonical collision-layer names are underscored; the `CollisionLayerPrototype` docs explicitly recommend underscores over dashes.
 
 ### 4.5 Step 5 — Land the beachhead
 

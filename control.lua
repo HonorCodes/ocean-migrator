@@ -1275,6 +1275,129 @@ commands.add_command(
   end)
 
 commands.add_command(
+  "omb-diagnose",
+  "Admin only. Prints the Ocean Migration algorithm's view of the current surface. Read-only.",
+  function(command)
+    local player = command.player_index and game.get_player(command.player_index) or nil
+    if not player then return end
+    if not player.admin then
+      player.print("Only admins can use /omb-diagnose.")
+      return
+    end
+
+    local surface = player.surface
+    local lines = {}
+
+    -- Surface eligibility.
+    lines[#lines + 1] = string.format("Surface: %s (eligible=%s)",
+      surface.name, tostring(eligible_surface(surface)))
+
+    -- Pollution.
+    local pollution = find_highest_pollution_chunk(surface)
+    if pollution then
+      lines[#lines + 1] = string.format(
+        "Highest-pollution chunk: [gps=%d,%d,%s] value=%.0f",
+        math.floor(pollution.position.x),
+        math.floor(pollution.position.y),
+        surface.name,
+        pollution.value)
+    else
+      lines[#lines + 1] = "No pollution on this surface — nothing to migrate toward."
+    end
+
+    -- Candidate preview.
+    if pollution then
+      local candidates = gather_sorted_candidates(surface, pollution.position)
+      lines[#lines + 1] = string.format(
+        "Enemy unit-spawners on surface: %d. Sorted by distance to pollution.",
+        #candidates)
+
+      local closest = candidates[1]
+      if closest and closest.entity and closest.entity.valid then
+        local d = math.sqrt(closest.distance_sq)
+        lines[#lines + 1] = string.format(
+          "Nearest-to-pollution spawner: %s [gps=%d,%d,%s] dist=%.0f tiles",
+          closest.entity.name,
+          math.floor(closest.position.x),
+          math.floor(closest.position.y),
+          surface.name,
+          d)
+
+        -- Straight-line ray summary (geometry only, no pathfinder).
+        local dir = { x = pollution.position.x - closest.position.x,
+                      y = pollution.position.y - closest.position.y }
+        local length = math.sqrt(dir.x * dir.x + dir.y * dir.y)
+        if length > 0 then
+          dir.x = dir.x / length
+          dir.y = dir.y / length
+        end
+        local step = setting("omb-scan-step")
+        local water_count = 0
+        local land_hit = nil
+        for distance = step, math.min(length, 1024), step do
+          local p = {
+            x = closest.position.x + dir.x * distance,
+            y = closest.position.y + dir.y * distance,
+          }
+          if not is_generated(surface, p) then break end
+          if is_water_tile(surface, p) then
+            water_count = water_count + step
+          elseif water_count > 0 then
+            land_hit = p
+            break
+          end
+        end
+        if land_hit then
+          lines[#lines + 1] = string.format(
+            "Ray summary: crosses ~%d water tiles, hits land at [gps=%d,%d,%s]",
+            water_count,
+            math.floor(land_hit.x),
+            math.floor(land_hit.y),
+            surface.name)
+        else
+          lines[#lines + 1] = string.format(
+            "Ray summary: %d water tiles crossed, no land hit within range",
+            water_count)
+        end
+      end
+    end
+
+    -- Walls.
+    local wall_count = 0
+    for _, entity in ipairs(surface.find_entities_filtered({
+      force = player.force, type = { "wall", "gate" } })) do
+      if entity.valid then wall_count = wall_count + 1 end
+    end
+    lines[#lines + 1] = string.format("Player-force walls/gates on surface: %d",
+                                      wall_count)
+
+    -- Budget, cooldown, evolution.
+    local state = surface_state(surface)
+    local remaining = math.max(0, (state.next_tick or 0) - game.tick)
+    local enemy = game.forces.enemy
+    local evolution = enemy and get_evolution(enemy, surface) or 0
+    lines[#lines + 1] = string.format(
+      "Budget: %d/%d. Cooldown: %d min remaining. Evolution: %.3f.",
+      math.floor(state.budget or 0),
+      setting("omb-budget-max"),
+      math.ceil(remaining / TICKS_PER_MINUTE),
+      evolution)
+
+    if state.attempt then
+      lines[#lines + 1] = string.format(
+        "In-flight attempt: stage=%s, age=%d ticks, candidate_i=%d/%d",
+        state.attempt.stage,
+        game.tick - state.attempt.started_tick,
+        state.attempt.candidate_i or 0,
+        #(state.attempt.candidates or {}))
+    end
+
+    for _, line in ipairs(lines) do
+      player.print(line)
+    end
+  end)
+
+commands.add_command(
   "omb-status",
   "Show Ocean Migration status for the current surface.",
   function(command)

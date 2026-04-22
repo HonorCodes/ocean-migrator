@@ -1,0 +1,11 @@
+{
+  "name": "ocean-migration",
+  "version": "0.2.8",
+  "title": "Ocean Migration",
+  "author": "Honor",
+  "factorio_version": "2.0",
+  "dependencies": [
+    "base >= 2.0"
+  ],
+  "description": "Have you ever spawned on an island and killed all of the natives, then felt a bit lonely? This mod allows biters to migrate back, so you'll never be alone again! Aren't you happy your friends are back?\n\nNote: should be fully compatible with Rampant and Krastorio 2. Good in large biter modpacks."
+}

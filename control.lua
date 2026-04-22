@@ -6,16 +6,6 @@ local PATH_RETRY_GAP_TICKS = 30
 local PATH_RADIUS = 8
 local PATH_BOUNDING_BOX = { { -0.4, -0.4 }, { 0.4, 0.4 } }
 local ATTEMPT_ORPHAN_TICKS = 600
-local DIRECTIONS = {
-  { x = 1, y = 0 },
-  { x = -1, y = 0 },
-  { x = 0, y = 1 },
-  { x = 0, y = -1 },
-  { x = 0.70710678, y = 0.70710678 },
-  { x = 0.70710678, y = -0.70710678 },
-  { x = -0.70710678, y = 0.70710678 },
-  { x = -0.70710678, y = -0.70710678 }
-}
 
 local function ensure_storage()
   storage.omb = storage.omb or {}
@@ -420,87 +410,6 @@ local function create_landfall(surface, center, radius, tile_name)
   end
 end
 
-local function find_landfall(surface, source, direction, min_water, max_water, step)
-  local saw_water = false
-  local water_start = nil
-  local water_distance = 0
-  local crossed_deep_water = false
-
-  for distance = step, max_water, step do
-    local pos = {
-      x = source.x + direction.x * distance,
-      y = source.y + direction.y * distance
-    }
-
-    if not is_generated(surface, pos) then
-      if saw_water and water_distance >= min_water and crossed_deep_water then
-        local last_pos = {
-          x = source.x + direction.x * (distance - step),
-          y = source.y + direction.y * (distance - step)
-        }
-        return {
-          x = last_pos.x,
-          y = last_pos.y,
-          crossed = water_distance
-        }
-      end
-      return nil
-    end
-
-    if is_water_tile(surface, pos) then
-      water_start = water_start or distance
-      saw_water = true
-      water_distance = distance - water_start + step
-      crossed_deep_water = crossed_deep_water or is_deep_water_tile(surface, pos)
-    elseif saw_water then
-      if water_distance >= min_water and crossed_deep_water then
-        return {
-          x = pos.x,
-          y = pos.y,
-          crossed = water_distance
-        }
-      end
-      saw_water = false
-      water_start = nil
-      water_distance = 0
-      crossed_deep_water = false
-    end
-  end
-
-  return nil
-end
-
-local function direction_toward(source, target)
-  local dx = target.x - source.x
-  local dy = target.y - source.y
-  local length = math.sqrt(dx * dx + dy * dy)
-
-  if length < 1 then
-    return nil
-  end
-
-  return { x = dx / length, y = dy / length }
-end
-
-local function candidate_directions(source, target)
-  local result = {}
-  local primary = direction_toward(source, target)
-
-  if primary then
-    result[#result + 1] = primary
-    result[#result + 1] = { x = primary.x * 0.9659258 - primary.y * 0.2588190, y = primary.x * 0.2588190 + primary.y * 0.9659258 }
-    result[#result + 1] = { x = primary.x * 0.9659258 + primary.y * 0.2588190, y = -primary.x * 0.2588190 + primary.y * 0.9659258 }
-    result[#result + 1] = { x = primary.x * 0.8660254 - primary.y * 0.5, y = primary.x * 0.5 + primary.y * 0.8660254 }
-    result[#result + 1] = { x = primary.x * 0.8660254 + primary.y * 0.5, y = -primary.x * 0.5 + primary.y * 0.8660254 }
-  end
-
-  for _, direction in ipairs(DIRECTIONS) do
-    result[#result + 1] = direction
-  end
-
-  return result
-end
-
 local function place_beachhead(surface, landfall, spawner_names)
   local nest_count = setting("omb-nests-per-beachhead")
   local landfall_radius = setting("omb-build-islands") and setting("omb-landfall-radius") or 0
@@ -554,77 +463,6 @@ local function chart_for_players(surface, pos)
       force.chart(surface, area)
     end
   end
-end
-
-local function nearest_player_position(surface, source)
-  local best = nil
-  local best_distance = nil
-
-  for _, player in pairs(game.connected_players) do
-    if valid_player(player) and player.surface == surface then
-      local d = distance_sq(source, player.position)
-      if not best_distance or d < best_distance then
-        best_distance = d
-        best = player.position
-      end
-    end
-  end
-
-  return best
-end
-
-local function shuffled_entities(entities, limit)
-  local count = #entities
-  local result = {}
-  local used = {}
-
-  limit = math.min(limit, count)
-  for _ = 1, limit do
-    local index
-    repeat
-      index = math.random(count)
-    until not used[index]
-    used[index] = true
-    result[#result + 1] = entities[index]
-  end
-
-  return result
-end
-
-local function find_enemy_spawners(surface)
-  local radius = setting("omb-source-search-radius")
-  local found = {}
-  local seen = {}
-
-  local function gather_from(position)
-    local ok, entities = pcall(function()
-      return surface.find_entities_filtered({
-        position = position,
-        radius = radius,
-        force = "enemy",
-        type = "unit-spawner"
-      })
-    end)
-
-    if not ok or not entities then
-      return
-    end
-
-    for _, entity in ipairs(entities) do
-      if entity.valid and entity.unit_number and not seen[entity.unit_number] then
-        seen[entity.unit_number] = true
-        found[#found + 1] = entity
-      end
-    end
-  end
-
-  for _, player in pairs(game.connected_players) do
-    if valid_player(player) and player.surface == surface then
-      gather_from(player.position)
-    end
-  end
-
-  return found
 end
 
 local function gather_sorted_candidates(surface, target_position)
@@ -1258,11 +1096,6 @@ local function start_attempt(surface, force_run, player_index)
   end
 
   issue_candidate_paths(surface.index, state.attempt)
-end
-
-local function attempt_surface_migration(surface, event_tick, force_run, player_index)
-  start_attempt(surface, force_run, player_index)
-  return true, "dispatched"
 end
 
 local function check_all_surfaces(event)

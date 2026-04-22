@@ -1292,12 +1292,102 @@ local function check_all_surfaces(event)
   end
 end
 
+local function housekeep(event)
+  ensure_storage()
+  local now = event.tick
+
+  -- Reissue paths that came back with try_again_later.
+  local to_reissue = {}
+  for id, pending in pairs(storage.omb.pending_paths) do
+    if pending.try_again_later and
+       (now - pending.issued_tick) >= PATH_RETRY_GAP_TICKS then
+      to_reissue[#to_reissue + 1] = { id = id, pending = pending }
+    end
+  end
+
+  for _, item in ipairs(to_reissue) do
+    storage.omb.pending_paths[item.id] = nil
+    local pending = item.pending
+    if pending.retries < PATH_RETRY_MAX then
+      local surface = game.surfaces[pending.surface_index]
+      if surface and surface.valid then
+        local new_id = surface.request_path({
+          bounding_box = PATH_BOUNDING_BOX,
+          collision_mask = resolve_source_collision_mask(pending.spawner_name),
+          start = pending.start,
+          goal = pending.goal,
+          force = game.forces.enemy,
+          radius = PATH_RADIUS,
+          pathfind_flags = {
+            allow_destroy_friendly_entities = false,
+            cache = true,
+            low_priority = true,
+            prefer_straight_paths = false,
+          },
+        })
+
+        if new_id then
+          storage.omb.pending_paths[new_id] = {
+            surface_index = pending.surface_index,
+            purpose = pending.purpose,
+            issued_tick = now,
+            retries = pending.retries + 1,
+            start = pending.start,
+            goal = pending.goal,
+            spawner_name = pending.spawner_name,
+          }
+        end
+      end
+    else
+      -- Retry budget exhausted; treat as hard failure.
+      local surface_state_entry = storage.omb.surfaces[pending.surface_index]
+      local attempt = surface_state_entry and surface_state_entry.attempt
+      if attempt then
+        if pending.purpose == "wall" then
+          resolve_wall(pending.surface_index, attempt, false)
+        elseif pending.purpose == "pollution" then
+          resolve_pollution(pending.surface_index, attempt, false)
+        elseif pending.purpose == "beach" then
+          resolve_beach(pending.surface_index, attempt, false)
+        end
+      end
+    end
+  end
+
+  -- Orphan cleanup: any attempt older than ATTEMPT_ORPHAN_TICKS is cleared.
+  for surface_index, state in pairs(storage.omb.surfaces) do
+    if state.attempt and (now - state.attempt.started_tick) > ATTEMPT_ORPHAN_TICKS then
+      if setting("omb-debug") then
+        game.print(
+          "Ocean Migration: clearing orphan attempt on surface " ..
+          tostring(surface_index) ..
+          " after " .. tostring(now - state.attempt.started_tick) .. " ticks.")
+      end
+      state.attempt = nil
+    end
+  end
+
+  -- Sweep pending_paths entries whose attempt is gone.
+  for id, pending in pairs(storage.omb.pending_paths) do
+    local state = storage.omb.surfaces[pending.surface_index]
+    if not (state and state.attempt) then
+      storage.omb.pending_paths[id] = nil
+    end
+  end
+end
+
+script.on_nth_tick(10, housekeep)
+
 script.on_init(function()
   ensure_storage()
 end)
 
 script.on_configuration_changed(function()
   ensure_storage()
+  storage.omb.pending_paths = {}
+  for _, state in pairs(storage.omb.surfaces) do
+    state.attempt = nil
+  end
 end)
 
 script.on_nth_tick(CHECK_INTERVAL, check_all_surfaces)

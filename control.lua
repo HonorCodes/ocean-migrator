@@ -201,7 +201,7 @@ local function is_deep_water_tile(surface, pos)
     return false
   end
 
-  if tile_collides_with_any(tile, { "player", "player-layer" }) then
+  if tile_collides_with_any(tile, { "player", "water_tile" }) then
     return true
   end
 
@@ -569,7 +569,7 @@ local function resolve_source_collision_mask(spawner_name)
     return fallback.collision_mask
   end
 
-  return { layers = { ["player-layer"] = true, ["water-tile"] = true } }
+  return { layers = { ["player"] = true, ["water_tile"] = true } }
 end
 
 local function issue_path_request(surface, start, goal, purpose, surface_index, spawner_name)

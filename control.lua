@@ -144,6 +144,26 @@ local function chunk_position(pos)
   return { x = math.floor(pos.x / 32), y = math.floor(pos.y / 32) }
 end
 
+local function find_highest_pollution_chunk(surface)
+  local best_pos = nil
+  local best_value = 0
+
+  for chunk in surface.get_chunks() do
+    local center = { x = chunk.x * 32 + 16, y = chunk.y * 32 + 16 }
+    local pollution = surface.get_pollution(center)
+    if pollution and pollution > best_value then
+      best_value = pollution
+      best_pos = center
+    end
+  end
+
+  if best_value <= 0 then
+    return nil
+  end
+
+  return { position = best_pos, value = best_value }
+end
+
 local function is_generated(surface, pos)
   return surface.is_chunk_generated(chunk_position(pos))
 end

@@ -780,6 +780,194 @@ end
 local function resolve_beach(surface_index, attempt, success)
 end
 
+-- ---------------------------------------------------------------------------
+-- Task 7: enumerate-stage driver
+-- ---------------------------------------------------------------------------
+
+local function attempt_reply(attempt, message)
+  if attempt.player_index then
+    local player = game.get_player(attempt.player_index)
+    if player and player.valid then
+      player.print(message)
+    end
+  elseif setting("omb-debug") then
+    game.print(message)
+  end
+end
+
+local function end_attempt(surface_index, reason, extra)
+  local surface_state_entry = storage.omb.surfaces[surface_index]
+  if not surface_state_entry then return end
+  local attempt = surface_state_entry.attempt
+  if not attempt then return end
+
+  if attempt.force_run or setting("omb-debug") then
+    attempt_reply(attempt, "Ocean Migration: " .. reason)
+  end
+
+  surface_state_entry.attempt = nil
+end
+
+local function issue_candidate_paths(surface_index, attempt)
+  local surface = game.surfaces[surface_index]
+  if not surface or not surface.valid then
+    end_attempt(surface_index, "surface became invalid")
+    return
+  end
+
+  local candidate = attempt.candidates[attempt.candidate_i]
+  if not candidate then
+    if attempt.force_run and attempt.player_index then
+      local player = game.get_player(attempt.player_index)
+      if player and player.valid then
+        local closest = attempt.candidates[1]
+        if closest then
+          player.print(string.format(
+            "Ocean Migration: all %d sampled nests can reach walls or pollution — no migration needed. Closest: [gps=%d,%d,%s]",
+            #attempt.candidates,
+            math.floor(closest.position.x),
+            math.floor(closest.position.y),
+            game.surfaces[surface_index].name))
+        end
+      end
+    end
+    end_attempt(surface_index, "no marooned nests (queue exhausted)")
+    return
+  end
+
+  local entity = candidate.entity
+  if not (entity and entity.valid) then
+    -- Stale entity; advance without issuing requests.
+    attempt.candidate_i = attempt.candidate_i + 1
+    issue_candidate_paths(surface_index, attempt)
+    return
+  end
+
+  attempt.current = {
+    unit_number = candidate.unit_number,
+    nest_position = { x = entity.position.x, y = entity.position.y },
+    spawner_name = entity.name,
+    wall_result = "pending",
+    pollution_result = "pending",
+  }
+
+  -- Path A: nearest wall, if any.
+  local wall_pos = nearest_wall(attempt.wall_index, entity.position)
+  if wall_pos then
+    issue_path_request(surface, entity.position, wall_pos, "wall",
+                       surface_index, entity.name)
+  else
+    -- No walls on this surface; treat as if the wall path failed.
+    -- Task 8's on_current_both_resolved treats "skip" identically to "fail":
+    -- only the pollution path decides marooned-ness when there are no walls.
+    attempt.current.wall_result = "skip"
+  end
+
+  -- Path B: pollution chunk.
+  issue_path_request(surface, entity.position, attempt.pollution_chunk,
+                     "pollution", surface_index, entity.name)
+end
+
+local function start_attempt(surface, force_run, player_index)
+  local state = surface_state(surface)
+
+  if state.attempt then
+    if player_index then
+      local player = game.get_player(player_index)
+      if player and player.valid then
+        player.print("Ocean Migration: check already in progress on " ..
+                     surface.name .. ", try again in ~10 seconds.")
+      end
+    end
+    return
+  end
+
+  -- Existing gates that apply in non-force mode. /omb-force bypasses them.
+  local enemy = game.forces.enemy
+  if not enemy then
+    return
+  end
+
+  local evolution = get_evolution(enemy, surface)
+  update_budget(surface, state, game.tick, evolution)
+
+  if not force_run then
+    if state.next_tick and game.tick < state.next_tick then return end
+    if state.beachheads >= setting("omb-max-beachheads-per-surface") then return end
+    if evolution < setting("omb-min-evolution") then return end
+  end
+
+  local pollution_hit = find_highest_pollution_chunk(surface)
+  if not pollution_hit then
+    if force_run and player_index then
+      local player = game.get_player(player_index)
+      if player and player.valid then
+        player.print("Ocean Migration: no pollution on " .. surface.name ..
+                     " yet — nothing to migrate toward.")
+      end
+    end
+    return
+  end
+
+  local candidates = gather_sorted_candidates(surface, pollution_hit.position)
+  if #candidates == 0 then
+    if force_run and player_index then
+      local player = game.get_player(player_index)
+      if player and player.valid then
+        player.print("Ocean Migration: no enemy unit-spawner entities on " ..
+                     surface.name .. ".")
+      end
+    end
+    return
+  end
+
+  local max_samples = setting("omb-max-samples-per-attempt")
+  if #candidates > max_samples then
+    for i = max_samples + 1, #candidates do candidates[i] = nil end
+  end
+
+  -- Pick a player force to scan walls for. For /omb-force, use the invoking
+  -- player's force; otherwise default to `player` (the standard vanilla force).
+  -- Multi-force edge cases are acknowledged in §9 Edge Cases; we default to
+  -- vanilla here and do not iterate all player forces.
+  local wall_force = game.forces.player
+  if player_index then
+    local player = game.get_player(player_index)
+    if player and player.valid then wall_force = player.force end
+  end
+
+  -- IMPORTANT: state.attempt must be assigned BEFORE calling
+  -- issue_candidate_paths, which reads attempt.candidate_i and writes
+  -- attempt.current.
+  state.attempt = {
+    stage = "check_candidate",
+    force_run = force_run,
+    player_index = player_index,
+    started_tick = game.tick,
+    pollution_chunk = pollution_hit.position,
+    pollution_value = pollution_hit.value,
+    candidates = candidates,
+    candidate_i = 1,
+    wall_index = build_wall_index(surface, wall_force),
+    current = nil,
+    beach = nil,
+  }
+
+  if force_run and player_index then
+    local player = game.get_player(player_index)
+    if player and player.valid then
+      player.print(string.format(
+        "Ocean Migration: pollution target [gps=%d,%d,%s]. Testing %d nearest nests.",
+        math.floor(pollution_hit.position.x),
+        math.floor(pollution_hit.position.y),
+        surface.name,
+        #candidates))
+    end
+  end
+
+  issue_candidate_paths(surface.index, state.attempt)
+end
+
 local function attempt_surface_migration(surface, event_tick, force_run)
   local state = surface_state(surface)
   local enemy = game.forces.enemy

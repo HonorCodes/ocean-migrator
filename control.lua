@@ -1260,88 +1260,9 @@ local function start_attempt(surface, force_run, player_index)
   issue_candidate_paths(surface.index, state.attempt)
 end
 
-local function attempt_surface_migration(surface, event_tick, force_run)
-  local state = surface_state(surface)
-  local enemy = game.forces.enemy
-  if not enemy then
-    return false, "enemy force missing"
-  end
-
-  local evolution = get_evolution(enemy, surface)
-  update_budget(surface, state, event_tick, evolution)
-
-  if not force_run and state.next_tick and event_tick < state.next_tick then
-    debug_print(surface, "cooldown")
-    return false, "cooldown"
-  end
-
-  if not force_run and state.beachheads >= setting("omb-max-beachheads-per-surface") then
-    debug_print(surface, "surface cap")
-    return false, "surface cap"
-  end
-
-  if not force_run and evolution < setting("omb-min-evolution") then
-    debug_print(surface, "evolution threshold")
-    return false, "evolution threshold"
-  end
-
-  local spawner_names = available_spawners()
-  if #spawner_names == 0 then
-    debug_print(surface, "no spawner prototypes")
-    return false, "no spawner prototypes"
-  end
-
-  local spawners = find_enemy_spawners(surface)
-  if #spawners == 0 then
-    debug_print(surface, "no nearby enemy spawners")
-    return false, "no nearby enemy spawners"
-  end
-
-  local sampled = force_run and shuffled_entities(spawners, #spawners) or shuffled_entities(spawners, setting("omb-max-samples-per-attempt"))
-  local min_water = setting("omb-min-water-tiles")
-  local min_migration_distance = setting("omb-min-migration-chunks") * 32
-  local max_water = setting("omb-max-water-tiles")
-  local step = setting("omb-scan-step")
-  local min_player_distance = setting("omb-min-distance-from-player")
-
-  for _, spawner in ipairs(sampled) do
-    if spawner.valid then
-      local target = nearest_player_position(surface, spawner.position)
-      if target then
-        for _, direction in ipairs(candidate_directions(spawner.position, target)) do
-          local landfall = find_landfall(surface, spawner.position, direction, min_water, max_water, step)
-          if landfall and far_enough_from_source(spawner.position, landfall, min_migration_distance) and away_from_players(surface, landfall, min_player_distance) then
-            local cost = migration_cost(landfall)
-            if not force_run and (state.budget or 0) < cost then
-              debug_print(surface, "budget " .. math.floor(state.budget or 0) .. "/" .. cost)
-              return false, "budget " .. math.floor(state.budget or 0) .. "/" .. cost
-            end
-
-            local placed, placed_position = place_beachhead(surface, landfall, spawner_name_options(spawner, spawner_names))
-            if placed > 0 then
-              if not force_run then
-                state.budget = math.max(0, (state.budget or 0) - cost)
-              end
-              state.beachheads = state.beachheads + 1
-              if not force_run then
-                state.next_tick = event_tick + setting("omb-cooldown-minutes") * TICKS_PER_MINUTE
-              end
-              chart_for_players(surface, landfall)
-
-              if setting("omb-notify") then
-                local notify_position = placed_position or landfall
-                game.print({ "ocean-migration-beachheads.beachhead-created", surface.name, math.floor(notify_position.x), math.floor(notify_position.y), force_run and 0 or cost, math.floor(landfall.crossed or 0) })
-              end
-
-              return true, "created", { source = spawner.position, destination = placed_position or landfall, landfall = landfall }
-            end
-          end
-        end
-      end
-    end
-  end
-
-  return false, "no valid ocean crossing found"
+local function attempt_surface_migration(surface, event_tick, force_run, player_index)
+  start_attempt(surface, force_run, player_index)
+  return true, "dispatched"
 end
 
 local function check_all_surfaces(event)
@@ -1355,14 +1276,18 @@ local function check_all_surfaces(event)
       if eligible_surface(player.surface) then
         surfaces[player.surface.index] = player.surface
       elseif setting("omb-debug") then
-        game.print({ "ocean-migration-beachheads.debug-skip", "non-planet surface", player.surface.name })
+        game.print({
+          "ocean-migration-beachheads.debug-skip",
+          "non-planet surface",
+          player.surface.name,
+        })
       end
     end
   end
 
   for _, surface in pairs(surfaces) do
     if surface.valid then
-      attempt_surface_migration(surface, event.tick)
+      start_attempt(surface, false, nil)
     end
   end
 end
@@ -1434,34 +1359,24 @@ commands.add_command("omb-status", "Show Ocean Migration status for the current 
   player.print({ "ocean-migration-beachheads.status", state.beachheads or 0, player.surface.name, math.floor(state.budget or 0), setting("omb-budget-max"), math.ceil(remaining / TICKS_PER_MINUTE) })
 end)
 
-commands.add_command("omb-force", "Admin only. Force one Ocean Migration attempt on your current surface, ignoring budget, cooldown, evolution, and surface cap.", function(command)
-  local player = command.player_index and game.get_player(command.player_index) or nil
-  if not player then
-    return
-  end
-
-  if not player.admin then
-    player.print("Only admins can use /omb-force.")
-    return
-  end
-
-  if not eligible_surface(player.surface) then
-    player.print("Ocean Migration cannot run on this non-planet surface.")
-    return
-  end
-
-  local ok, reason, result = attempt_surface_migration(player.surface, game.tick, true)
-  if ok and result then
-    local source = result.source
-    local destination = result.destination
-    player.print("Ocean Migration forced a beachhead. Source nest: [gps=" .. math.floor(source.x) .. "," .. math.floor(source.y) .. "," .. player.surface.name .. "]. New nest: [gps=" .. math.floor(destination.x) .. "," .. math.floor(destination.y) .. "," .. player.surface.name .. "].")
-  else
-    local hint = ""
-    if reason == "no nearby enemy spawners" then
-      hint = " (no enemy unit-spawner entities within the configured source search radius of any connected player on this surface; make sure enemy nests are loaded/generated near players)"
-    elseif reason == "no valid ocean crossing found" then
-      hint = " (scanned rays from sampled nests toward the nearest player but none crossed enough deep water to reach generated land; the path must also include at least one deep or unpassable water tile and satisfy the minimum migration distance)"
+commands.add_command(
+  "omb-force",
+  "Admin only. Force one Ocean Migration attempt on your current surface, ignoring budget, cooldown, evolution, and surface cap.",
+  function(command)
+    local player = command.player_index and game.get_player(command.player_index) or nil
+    if not player then
+      return
     end
-    player.print("Ocean Migration force-run failed: " .. tostring(reason) .. "." .. hint)
-  end
-end)
+
+    if not player.admin then
+      player.print("Only admins can use /omb-force.")
+      return
+    end
+
+    if not eligible_surface(player.surface) then
+      player.print("Ocean Migration cannot run on this non-planet surface.")
+      return
+    end
+
+    start_attempt(player.surface, true, command.player_index)
+  end)

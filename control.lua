@@ -1260,27 +1260,46 @@ script.on_event(defines.events.on_script_path_request_finished, function(event)
   end
 end)
 
-commands.add_command("omb-reset", "Reset Ocean Migration counters.", function(command)
-  local player = command.player_index and game.get_player(command.player_index) or nil
-  if player and not player.admin then
-    player.print("Only admins can use /omb-reset.")
-    return
-  end
+commands.add_command(
+  "omb-reset",
+  "Reset Ocean Migration counters.",
+  function(command)
+    local player = command.player_index and game.get_player(command.player_index) or nil
+    if player and not player.admin then
+      player.print("Only admins can use /omb-reset.")
+      return
+    end
 
-  storage.omb = { surfaces = {} }
-  game.print({ "ocean-migration-beachheads.beachheads-reset" })
-end)
+    storage.omb = { surfaces = {}, pending_paths = {} }
+    game.print({ "ocean-migration-beachheads.beachheads-reset" })
+  end)
 
-commands.add_command("omb-status", "Show Ocean Migration status for the current surface.", function(command)
-  local player = command.player_index and game.get_player(command.player_index) or nil
-  if not player then
-    return
-  end
+commands.add_command(
+  "omb-status",
+  "Show Ocean Migration status for the current surface.",
+  function(command)
+    local player = command.player_index and game.get_player(command.player_index) or nil
+    if not player then return end
 
-  local state = surface_state(player.surface)
-  local remaining = math.max(0, (state.next_tick or 0) - game.tick)
-  player.print({ "ocean-migration-beachheads.status", state.beachheads or 0, player.surface.name, math.floor(state.budget or 0), setting("omb-budget-max"), math.ceil(remaining / TICKS_PER_MINUTE) })
-end)
+    local state = surface_state(player.surface)
+    local remaining = math.max(0, (state.next_tick or 0) - game.tick)
+    player.print({
+      "ocean-migration-beachheads.status",
+      state.beachheads or 0,
+      player.surface.name,
+      math.floor(state.budget or 0),
+      setting("omb-budget-max"),
+      math.ceil(remaining / TICKS_PER_MINUTE),
+    })
+
+    if state.attempt then
+      player.print(string.format(
+        "Migration check in progress (stage: %s, started tick %d, age %d ticks).",
+        state.attempt.stage,
+        state.attempt.started_tick,
+        game.tick - state.attempt.started_tick))
+    end
+  end)
 
 commands.add_command(
   "omb-force",

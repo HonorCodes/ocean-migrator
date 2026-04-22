@@ -14,6 +14,7 @@ local DIRECTIONS = {
 local function ensure_storage()
   storage.omb = storage.omb or {}
   storage.omb.surfaces = storage.omb.surfaces or {}
+  storage.omb.pending_paths = storage.omb.pending_paths or {}
 end
 
 local function surface_state(surface)
@@ -23,11 +24,14 @@ local function surface_state(surface)
     beachheads = 0,
     next_tick = 0,
     budget = 0,
-    last_budget_tick = game and game.tick or 0
+    last_budget_tick = game and game.tick or 0,
+    attempt = nil,
   }
-  storage.omb.surfaces[index].budget = storage.omb.surfaces[index].budget or 0
-  storage.omb.surfaces[index].last_budget_tick = storage.omb.surfaces[index].last_budget_tick or (game and game.tick or 0)
-  return storage.omb.surfaces[index]
+  local state = storage.omb.surfaces[index]
+  state.budget = state.budget or 0
+  state.last_budget_tick = state.last_budget_tick or (game and game.tick or 0)
+  state.attempt = state.attempt  -- leaves nil untouched; explicit for readers
+  return state
 end
 
 local function setting(name)

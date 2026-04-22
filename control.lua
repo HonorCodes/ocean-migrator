@@ -608,17 +608,21 @@ local function issue_path_request(surface, start, goal, purpose, surface_index, 
 end
 
 -- ---------------------------------------------------------------------------
--- Task 8: check_candidate resolution helpers
+-- Forward declarations. These functions are assigned below; several
+-- callers upstream (advance_candidate, try_ray, finalize_beachhead_spawn)
+-- close over these names, so they must be in scope before those closures
+-- are compiled.
 -- ---------------------------------------------------------------------------
+
+local end_attempt
+local issue_candidate_paths
+local start_beach_search
 
 local function advance_candidate(surface_index, attempt)
   attempt.current = nil
   attempt.candidate_i = attempt.candidate_i + 1
   issue_candidate_paths(surface_index, attempt)
 end
-
--- Forward declaration; defined in Task 9.
-local start_beach_search
 
 local function on_current_both_resolved(surface_index, attempt)
   local current = attempt.current
@@ -925,7 +929,7 @@ local function attempt_reply(attempt, message)
   end
 end
 
-local function end_attempt(surface_index, reason, extra)
+end_attempt = function(surface_index, reason, extra)
   local surface_state_entry = storage.omb.surfaces[surface_index]
   if not surface_state_entry then return end
   local attempt = surface_state_entry.attempt
@@ -938,7 +942,7 @@ local function end_attempt(surface_index, reason, extra)
   surface_state_entry.attempt = nil
 end
 
-local function issue_candidate_paths(surface_index, attempt)
+issue_candidate_paths = function(surface_index, attempt)
   local surface = game.surfaces[surface_index]
   if not surface or not surface.valid then
     end_attempt(surface_index, "surface became invalid")

@@ -769,14 +769,76 @@ local function issue_path_request(surface, start, goal, purpose, surface_index, 
   return request_id
 end
 
--- These three are filled out in Tasks 8 and 9. The stub body exists so the
--- event handler below can route without NPE'ing.
+-- ---------------------------------------------------------------------------
+-- Task 8: check_candidate resolution helpers
+-- ---------------------------------------------------------------------------
+
+local function advance_candidate(surface_index, attempt)
+  attempt.current = nil
+  attempt.candidate_i = attempt.candidate_i + 1
+  issue_candidate_paths(surface_index, attempt)
+end
+
+-- Forward declaration; defined in Task 9.
+local start_beach_search
+
+local function on_current_both_resolved(surface_index, attempt)
+  local current = attempt.current
+  if not current then return end
+
+  local candidate_entity = game.get_entity_by_unit_number(current.unit_number)
+  if not (candidate_entity and candidate_entity.valid) then
+    advance_candidate(surface_index, attempt)
+    return
+  end
+
+  local reachable = (current.wall_result == "success") or
+                    (current.pollution_result == "success")
+
+  if reachable then
+    advance_candidate(surface_index, attempt)
+    return
+  end
+
+  -- Both failed → marooned.
+  if attempt.force_run and attempt.player_index then
+    local player = game.get_player(attempt.player_index)
+    if player and player.valid then
+      player.print(string.format(
+        "Ocean Migration: marooned nest found [gps=%d,%d,%s]. Scanning beachhead.",
+        math.floor(current.nest_position.x),
+        math.floor(current.nest_position.y),
+        game.surfaces[surface_index].name))
+    end
+  end
+
+  attempt.stage = "validate_beach"
+  attempt.beach = {
+    source = { x = current.nest_position.x, y = current.nest_position.y },
+    spawner_name = current.spawner_name,
+    fan_offsets = { 0, 15, -15, 30, -30 },
+    fan_i = 1,
+  }
+  start_beach_search(surface_index, attempt)
+end
+
 local function resolve_wall(surface_index, attempt, success)
+  if not attempt.current then return end
+  attempt.current.wall_result = success and "success" or "fail"
+  if attempt.current.pollution_result ~= "pending" then
+    on_current_both_resolved(surface_index, attempt)
+  end
 end
 
 local function resolve_pollution(surface_index, attempt, success)
+  if not attempt.current then return end
+  attempt.current.pollution_result = success and "success" or "fail"
+  if attempt.current.wall_result ~= "pending" then
+    on_current_both_resolved(surface_index, attempt)
+  end
 end
 
+-- resolve_beach stays a stub here; filled in Task 9.
 local function resolve_beach(surface_index, attempt, success)
 end
 

@@ -471,16 +471,34 @@ local function gather_sorted_candidates(surface, target_position)
     type = "unit-spawner",
   })
 
-  local scored = {}
+  -- Chunk-diversify: one representative per 32x32 chunk. Within a chunk,
+  -- keep the spawner nearest to the target (ties broken by lowest
+  -- unit_number for determinism). This prevents a dense mainland biter
+  -- cluster from crowding out distant water-isolated clusters when the
+  -- sample cap is applied in start_attempt.
+  local chunks = {}
   for _, entity in ipairs(entities) do
     if entity.valid and entity.unit_number then
-      scored[#scored + 1] = {
-        unit_number = entity.unit_number,
-        position = entity.position,
-        distance_sq = distance_sq(entity.position, target_position),
-        entity = entity,
-      }
+      local cp = chunk_position(entity.position)
+      local key = cp.x .. ":" .. cp.y
+      local dsq = distance_sq(entity.position, target_position)
+      local existing = chunks[key]
+      if not existing
+         or dsq < existing.distance_sq
+         or (dsq == existing.distance_sq and entity.unit_number < existing.unit_number) then
+        chunks[key] = {
+          unit_number = entity.unit_number,
+          position = entity.position,
+          distance_sq = dsq,
+          entity = entity,
+        }
+      end
     end
+  end
+
+  local scored = {}
+  for _, rep in pairs(chunks) do
+    scored[#scored + 1] = rep
   end
 
   table.sort(scored, function(a, b)
@@ -1055,9 +1073,38 @@ local function start_attempt(surface, force_run, player_index)
     return
   end
 
+  -- Apply the sample cap with a guaranteed-near + stratified-far split
+  -- rather than a plain nearest-N truncation. Guarantees the sample spans
+  -- the full distance range to pollution, so water-isolated clusters far
+  -- from the factory aren't silently dropped when the mainland is dense.
   local max_samples = setting("omb-max-samples-per-attempt")
   if #candidates > max_samples then
-    for i = max_samples + 1, #candidates do candidates[i] = nil end
+    local guaranteed = math.max(1, math.floor(max_samples / 3))
+    if guaranteed > max_samples then
+      guaranteed = max_samples
+    end
+    local remaining = max_samples - guaranteed
+
+    local sampled = {}
+    for i = 1, guaranteed do
+      sampled[i] = candidates[i]
+    end
+
+    if remaining > 0 then
+      local pool_start = guaranteed + 1
+      local pool_end = #candidates
+      local pool_size = pool_end - pool_start + 1
+      if pool_size > 0 then
+        local stride = pool_size / remaining
+        for i = 1, remaining do
+          local idx = pool_start + math.floor((i - 1) * stride)
+          if idx > pool_end then idx = pool_end end
+          sampled[guaranteed + i] = candidates[idx]
+        end
+      end
+    end
+
+    candidates = sampled
   end
 
   -- Pick a player force to scan walls for. For /omb-force, use the invoking

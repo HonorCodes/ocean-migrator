@@ -75,7 +75,9 @@ Iterate generated chunks on the surface via `surface.get_chunks()`. For each chu
 
 `surface.find_entities_filtered{force="enemy", type="unit-spawner"}` over the whole surface (no radius constraint).
 
-Sort the results by squared distance to the pollution chunk center, ascending. This list is the candidate queue.
+**Chunk-diversify first, then sort.** Group the returned spawners by 32×32 chunk. Within each chunk, keep one representative — the spawner nearest to the pollution chunk (ties broken by lowest `unit_number` for determinism). This prevents a dense mainland biter cluster from crowding the sample and silently excluding distant water-isolated clusters. Sort the per-chunk representatives by squared distance to the pollution chunk center, ascending. This list is the candidate queue.
+
+**Apply the cap with guaranteed-near + stratified-far.** In step 4 the queue is capped at `omb-max-samples-per-attempt` (default 24). Instead of a plain nearest-N truncation, keep `floor(max_samples / 3)` guaranteed-near slots and spread the remainder stratified across the rest of the sorted list (stride = `remaining_pool_size / remaining_slots`, floor). This guarantees the sample spans the full distance range to pollution and catches water-isolated clusters far from the factory even on maps with a large mainland biter population.
 
 - If the list is empty, end the attempt with reason "no enemy unit-spawner entities on this surface".
 

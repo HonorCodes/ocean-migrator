@@ -621,6 +621,31 @@ local function find_enemy_spawners(surface)
   return found
 end
 
+local function gather_sorted_candidates(surface, target_position)
+  local entities = surface.find_entities_filtered({
+    force = "enemy",
+    type = "unit-spawner",
+  })
+
+  local scored = {}
+  for _, entity in ipairs(entities) do
+    if entity.valid and entity.unit_number then
+      scored[#scored + 1] = {
+        unit_number = entity.unit_number,
+        position = entity.position,
+        distance_sq = distance_sq(entity.position, target_position),
+        entity = entity,
+      }
+    end
+  end
+
+  table.sort(scored, function(a, b)
+    return a.distance_sq < b.distance_sq
+  end)
+
+  return scored
+end
+
 local function attempt_surface_migration(surface, event_tick, force_run)
   local state = surface_state(surface)
   local enemy = game.forces.enemy

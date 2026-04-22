@@ -17,12 +17,13 @@ This is a runtime companion mod, not a Rampant Fixed patch. It does not modify R
 - Spends budget when a beachhead is successfully created.
 - Searches for enemy nests near connected players.
 - Scans from those nests toward the nearest player and nearby angles.
-- If the scan crosses at least `Minimum water crossing distance` and finds generated land beyond it, the mod creates a small landfall patch and places enemy nests.
+- If the scan crosses at least `Minimum water crossing distance`, includes at least one deep/unpassable water tile, and finds generated land beyond it, the mod creates a small landfall patch and places enemy nests.
 
 ## Suggested settings
 
-- Minimum enemy evolution: `0.75` to `0.90`
+- Minimum enemy evolution: `0.50` to `0.90`
 - Minimum water crossing distance: `64` or higher
+- Minimum migration distance, chunks: `3` by default, equal to 96 tiles; raise it if you want longer island-to-mainland migrations
 - Maximum water crossing distance: `512` or higher for ocean maps
 - Migration cooldown: `30` to `90` minutes
 - Migration budget scaling: `1.0`, or higher for more frequent migrations
@@ -36,6 +37,7 @@ This is a runtime companion mod, not a Rampant Fixed patch. It does not modify R
 - `/omb-status` shows the current surface's beachhead count and cooldown.
 - `/omb-status` also shows the current migration budget.
 - `/omb-reset` resets counters and cooldowns. Admin only.
+- `/omb-force` force-runs one migration attempt on your current surface. Admin only. Ignores budget, cooldown, evolution threshold, and surface cap, but still requires a valid enemy nest, deep/unpassable water crossing, and legal beachhead location. On success, it prints both the sampled source nest and new nest GPS links.
 
 ## Migration budget
 
@@ -59,6 +61,7 @@ Enable `Debug messages` in Map settings to print budget gain, skipped migrations
 - Add to an existing save. It is enabled by default and can be disabled under Settings > Mod settings > Map.
 - The mod only scans generated chunks. It will not silently generate far-away oceans.
 - If `water_spitters` is active and the `water-biter-spawner` prototype exists, it can include that nest type.
+- If a migration starts from a modded enemy spawner, Ocean Migration tries to create that same spawner type at the beachhead first, then falls back to available vanilla/water-spitter spawners.
 - If Rampant Fixed is active, it should see the new enemy nests through normal script-raised build events and/or subsequent scanning, but this mod intentionally does not call Rampant's private internals.
 - Landfall tile placement is disabled by default through the `EXPERIMENTAL: Biters can build islands` checkbox. If enabled, it uses Factorio's `abort_on_collision` behavior and is wrapped defensively, so it should not delete modded entities, resources, machines, or hidden support entities to make room.
 - All settings are runtime-global. Loading the mod does not change prototypes, recipes, technology, enemies, surfaces, or map generation.

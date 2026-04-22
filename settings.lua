@@ -35,6 +35,15 @@ data:extend({
   },
   {
     type = "int-setting",
+    name = "omb-min-migration-chunks",
+    setting_type = "runtime-global",
+    default_value = 3,
+    minimum_value = 0,
+    maximum_value = 256,
+    order = "da"
+  },
+  {
+    type = "int-setting",
     name = "omb-max-water-tiles",
     setting_type = "runtime-global",
     default_value = 512,

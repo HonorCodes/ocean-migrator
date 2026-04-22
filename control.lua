@@ -157,6 +157,38 @@ local function is_water_tile(surface, pos)
   return tile.collides_with("ground_tile")
 end
 
+local function tile_collides_with_any(tile, layers)
+  for _, layer in ipairs(layers) do
+    local ok, result = pcall(function()
+      return tile.collides_with(layer)
+    end)
+
+    if ok and result then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function is_deep_water_tile(surface, pos)
+  if not is_water_tile(surface, pos) then
+    return false
+  end
+
+  local tile = surface.get_tile(pos.x, pos.y)
+  if not tile or not tile.valid then
+    return false
+  end
+
+  if tile_collides_with_any(tile, { "player", "player-layer" }) then
+    return true
+  end
+
+  local name = tile.name or ""
+  return name:match("deep") ~= nil and name:match("shallow") == nil
+end
+
 local function is_land_tile(surface, pos)
   if not is_generated(surface, pos) then
     return false
@@ -233,22 +265,64 @@ local function away_from_players(surface, pos, min_distance)
   return true
 end
 
+local function far_enough_from_source(source, destination, min_distance)
+  if min_distance <= 0 then
+    return true
+  end
+
+  return distance_sq(source, destination) >= (min_distance * min_distance)
+end
+
+local function prototype_is_unit_spawner(proto)
+  if not proto then
+    return false
+  end
+
+  local ok, result = pcall(function() return proto.type end)
+  if ok and result == "unit-spawner" then
+    return true
+  end
+
+  return false
+end
+
 local function available_spawners()
   local names = {}
+  local seen = {}
 
-  if not prototypes or not prototypes.entity or prototypes.entity["biter-spawner"] then
-    names[#names + 1] = "biter-spawner"
+  local function add(name)
+    if name and not seen[name] then
+      seen[name] = true
+      names[#names + 1] = name
+    end
   end
 
-  if not prototypes or not prototypes.entity or prototypes.entity["spitter-spawner"] then
-    names[#names + 1] = "spitter-spawner"
-  end
-
-  if setting("omb-use-water-spitters") and prototypes and prototypes.entity and prototypes.entity["water-biter-spawner"] then
-    names[#names + 1] = "water-biter-spawner"
+  if prototypes and prototypes.entity then
+    if prototypes.entity["biter-spawner"] then
+      add("biter-spawner")
+    end
+    if prototypes.entity["spitter-spawner"] then
+      add("spitter-spawner")
+    end
+    if setting("omb-use-water-spitters") and prototypes.entity["water-biter-spawner"] then
+      add("water-biter-spawner")
+    end
+  else
+    add("biter-spawner")
+    add("spitter-spawner")
   end
 
   return names
+end
+
+local function is_valid_spawner_name(name)
+  if not name then
+    return false
+  end
+  if not prototypes or not prototypes.entity then
+    return true
+  end
+  return prototype_is_unit_spawner(prototypes.entity[name])
 end
 
 local function choose_spawner(names)
@@ -257,6 +331,34 @@ local function choose_spawner(names)
   end
 
   return names[math.random(#names)]
+end
+
+local function spawner_name_options(source_spawner, fallback_names)
+  local names = {}
+  local seen = {}
+
+  if source_spawner and source_spawner.valid and source_spawner.name and is_valid_spawner_name(source_spawner.name) then
+    names[#names + 1] = source_spawner.name
+    seen[source_spawner.name] = true
+  end
+
+  for _, name in ipairs(fallback_names) do
+    if not seen[name] and is_valid_spawner_name(name) then
+      names[#names + 1] = name
+      seen[name] = true
+    end
+  end
+
+  if #names == 0 then
+    for _, name in ipairs(fallback_names) do
+      if not seen[name] then
+        names[#names + 1] = name
+        seen[name] = true
+      end
+    end
+  end
+
+  return names
 end
 
 local function create_landfall(surface, center, radius, tile_name)
@@ -292,6 +394,7 @@ local function find_landfall(surface, source, direction, min_water, max_water, s
   local saw_water = false
   local water_start = nil
   local water_distance = 0
+  local crossed_deep_water = false
 
   for distance = step, max_water, step do
     local pos = {
@@ -300,6 +403,17 @@ local function find_landfall(surface, source, direction, min_water, max_water, s
     }
 
     if not is_generated(surface, pos) then
+      if saw_water and water_distance >= min_water and crossed_deep_water then
+        local last_pos = {
+          x = source.x + direction.x * (distance - step),
+          y = source.y + direction.y * (distance - step)
+        }
+        return {
+          x = last_pos.x,
+          y = last_pos.y,
+          crossed = water_distance
+        }
+      end
       return nil
     end
 
@@ -307,16 +421,19 @@ local function find_landfall(surface, source, direction, min_water, max_water, s
       water_start = water_start or distance
       saw_water = true
       water_distance = distance - water_start + step
+      crossed_deep_water = crossed_deep_water or is_deep_water_tile(surface, pos)
     elseif saw_water then
-      if water_distance >= min_water then
+      if water_distance >= min_water and crossed_deep_water then
         return {
           x = pos.x,
           y = pos.y,
           crossed = water_distance
         }
-      else
-        return nil
       end
+      saw_water = false
+      water_start = nil
+      water_distance = 0
+      crossed_deep_water = false
     end
   end
 
@@ -359,30 +476,37 @@ local function place_beachhead(surface, landfall, spawner_names)
   local landfall_radius = setting("omb-build-islands") and setting("omb-landfall-radius") or 0
   local tile_name = setting("omb-landfall-tile")
   local placed = 0
+  local first_position = nil
 
   create_landfall(surface, landfall, landfall_radius, tile_name)
 
   for _ = 1, nest_count do
-    local name = choose_spawner(spawner_names)
     local radius = math.max(landfall_radius + 8, 16)
-    local pos = surface.find_non_colliding_position(name, landfall, radius, 1, true)
+    local start_index = math.random(#spawner_names)
 
-    if pos and surface.can_place_entity({ name = name, position = pos, force = "enemy" }) then
-      local entity = surface.create_entity({
-        name = name,
-        position = pos,
-        force = "enemy",
-        raise_built = true,
-        move_stuck_players = true
-      })
+    for offset = 0, #spawner_names - 1 do
+      local name = spawner_names[((start_index + offset - 1) % #spawner_names) + 1]
+      local pos = surface.find_non_colliding_position(name, landfall, radius, 1, true)
 
-      if entity and entity.valid then
-        placed = placed + 1
+      if pos and surface.can_place_entity({ name = name, position = pos, force = "enemy" }) then
+        local entity = surface.create_entity({
+          name = name,
+          position = pos,
+          force = "enemy",
+          raise_built = true,
+          move_stuck_players = true
+        })
+
+        if entity and entity.valid then
+          placed = placed + 1
+          first_position = first_position or entity.position
+          break
+        end
       end
     end
   end
 
-  return placed
+  return placed, first_position
 end
 
 local function chart_for_players(surface, pos)
@@ -442,66 +566,77 @@ local function find_enemy_spawners(surface)
   local found = {}
   local seen = {}
 
-  for _, player in pairs(game.connected_players) do
-    if valid_player(player) and player.surface == surface then
-      local entities = surface.find_entities_filtered({
-        position = player.position,
+  local function gather_from(position)
+    local ok, entities = pcall(function()
+      return surface.find_entities_filtered({
+        position = position,
         radius = radius,
         force = "enemy",
         type = "unit-spawner"
       })
+    end)
 
-      for _, entity in ipairs(entities) do
-        if entity.valid and not seen[entity.unit_number] then
-          seen[entity.unit_number] = true
-          found[#found + 1] = entity
-        end
+    if not ok or not entities then
+      return
+    end
+
+    for _, entity in ipairs(entities) do
+      if entity.valid and entity.unit_number and not seen[entity.unit_number] then
+        seen[entity.unit_number] = true
+        found[#found + 1] = entity
       end
+    end
+  end
+
+  for _, player in pairs(game.connected_players) do
+    if valid_player(player) and player.surface == surface then
+      gather_from(player.position)
     end
   end
 
   return found
 end
 
-local function attempt_surface_migration(surface, event_tick)
+local function attempt_surface_migration(surface, event_tick, force_run)
   local state = surface_state(surface)
   local enemy = game.forces.enemy
   if not enemy then
-    return
+    return false, "enemy force missing"
   end
 
   local evolution = get_evolution(enemy, surface)
   update_budget(surface, state, event_tick, evolution)
 
-  if state.next_tick and event_tick < state.next_tick then
+  if not force_run and state.next_tick and event_tick < state.next_tick then
     debug_print(surface, "cooldown")
-    return
+    return false, "cooldown"
   end
 
-  if state.beachheads >= setting("omb-max-beachheads-per-surface") then
+  if not force_run and state.beachheads >= setting("omb-max-beachheads-per-surface") then
     debug_print(surface, "surface cap")
-    return
+    return false, "surface cap"
   end
 
-  if evolution < setting("omb-min-evolution") then
+  if not force_run and evolution < setting("omb-min-evolution") then
     debug_print(surface, "evolution threshold")
-    return
+    return false, "evolution threshold"
   end
 
   local spawner_names = available_spawners()
   if #spawner_names == 0 then
     debug_print(surface, "no spawner prototypes")
-    return
+    return false, "no spawner prototypes"
   end
 
   local spawners = find_enemy_spawners(surface)
   if #spawners == 0 then
     debug_print(surface, "no nearby enemy spawners")
-    return
+    return false, "no nearby enemy spawners"
   end
 
-  local sampled = shuffled_entities(spawners, setting("omb-max-samples-per-attempt"))
+  local sampled = force_run and shuffled_entities(spawners, #spawners) or shuffled_entities(spawners, setting("omb-max-samples-per-attempt"))
   local min_water = setting("omb-min-water-tiles")
+  local min_migration_distance = setting("omb-min-migration-chunks") * 32
   local max_water = setting("omb-max-water-tiles")
   local step = setting("omb-scan-step")
   local min_player_distance = setting("omb-min-distance-from-player")
@@ -512,31 +647,38 @@ local function attempt_surface_migration(surface, event_tick)
       if target then
         for _, direction in ipairs(candidate_directions(spawner.position, target)) do
           local landfall = find_landfall(surface, spawner.position, direction, min_water, max_water, step)
-          if landfall and away_from_players(surface, landfall, min_player_distance) then
+          if landfall and far_enough_from_source(spawner.position, landfall, min_migration_distance) and away_from_players(surface, landfall, min_player_distance) then
             local cost = migration_cost(landfall)
-            if (state.budget or 0) < cost then
+            if not force_run and (state.budget or 0) < cost then
               debug_print(surface, "budget " .. math.floor(state.budget or 0) .. "/" .. cost)
-              return
+              return false, "budget " .. math.floor(state.budget or 0) .. "/" .. cost
             end
 
-            local placed = place_beachhead(surface, landfall, spawner_names)
+            local placed, placed_position = place_beachhead(surface, landfall, spawner_name_options(spawner, spawner_names))
             if placed > 0 then
-              state.budget = math.max(0, (state.budget or 0) - cost)
+              if not force_run then
+                state.budget = math.max(0, (state.budget or 0) - cost)
+              end
               state.beachheads = state.beachheads + 1
-              state.next_tick = event_tick + setting("omb-cooldown-minutes") * TICKS_PER_MINUTE
+              if not force_run then
+                state.next_tick = event_tick + setting("omb-cooldown-minutes") * TICKS_PER_MINUTE
+              end
               chart_for_players(surface, landfall)
 
               if setting("omb-notify") then
-                game.print({ "ocean-migration-beachheads.beachhead-created", surface.name, math.floor(landfall.x), math.floor(landfall.y), cost, math.floor(landfall.crossed or 0) })
+                local notify_position = placed_position or landfall
+                game.print({ "ocean-migration-beachheads.beachhead-created", surface.name, math.floor(notify_position.x), math.floor(notify_position.y), force_run and 0 or cost, math.floor(landfall.crossed or 0) })
               end
 
-              return
+              return true, "created", { source = spawner.position, destination = placed_position or landfall, landfall = landfall }
             end
           end
         end
       end
     end
   end
+
+  return false, "no valid ocean crossing found"
 end
 
 local function check_all_surfaces(event)
@@ -592,4 +734,36 @@ commands.add_command("omb-status", "Show Ocean Migration status for the current 
   local state = surface_state(player.surface)
   local remaining = math.max(0, (state.next_tick or 0) - game.tick)
   player.print({ "ocean-migration-beachheads.status", state.beachheads or 0, player.surface.name, math.floor(state.budget or 0), setting("omb-budget-max"), math.ceil(remaining / TICKS_PER_MINUTE) })
+end)
+
+commands.add_command("omb-force", "Admin only. Force one Ocean Migration attempt on your current surface, ignoring budget, cooldown, evolution, and surface cap.", function(command)
+  local player = command.player_index and game.get_player(command.player_index) or nil
+  if not player then
+    return
+  end
+
+  if not player.admin then
+    player.print("Only admins can use /omb-force.")
+    return
+  end
+
+  if not eligible_surface(player.surface) then
+    player.print("Ocean Migration cannot run on this non-planet surface.")
+    return
+  end
+
+  local ok, reason, result = attempt_surface_migration(player.surface, game.tick, true)
+  if ok and result then
+    local source = result.source
+    local destination = result.destination
+    player.print("Ocean Migration forced a beachhead. Source nest: [gps=" .. math.floor(source.x) .. "," .. math.floor(source.y) .. "," .. player.surface.name .. "]. New nest: [gps=" .. math.floor(destination.x) .. "," .. math.floor(destination.y) .. "," .. player.surface.name .. "].")
+  else
+    local hint = ""
+    if reason == "no nearby enemy spawners" then
+      hint = " (no enemy unit-spawner entities within the configured source search radius of any connected player on this surface; make sure enemy nests are loaded/generated near players)"
+    elseif reason == "no valid ocean crossing found" then
+      hint = " (scanned rays from sampled nests toward the nearest player but none crossed enough deep water to reach generated land; the path must also include at least one deep or unpassable water tile and satisfy the minimum migration distance)"
+    end
+    player.print("Ocean Migration force-run failed: " .. tostring(reason) .. "." .. hint)
+  end
 end)

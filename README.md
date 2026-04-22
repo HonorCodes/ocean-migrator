@@ -1,47 +1,68 @@
 # Ocean Migration
 
-Adds a high-evolution enemy beachhead mechanic for existing Factorio saves.
+A lightweight Factorio 2.0 mod that lets enemy nests re-establish across deep ocean, so island starts don't stay permanently safe after the local biters are wiped out.
 
-Have you ever spawned on an island and killed all of the natives, then felt a bit lonely? This mod allows biters to migrate back, so you'll never be alone again! Aren't you happy your friends are back?
+Have you ever spawned on an island and killed all of the natives, then felt a bit lonely? This mod allows biters to migrate back, so you'll never be alone again.
 
-Note: should be fully compatible with Rampant and Krastorio 2. Good in large biter modpacks.
+- **Author:** Honor
+- **Version:** `0.3.3`
+- **Factorio version:** 2.0 (a 1.1 fallback package exists locally)
+- **License:** MIT (see [`LICENSE`](./LICENSE))
+- **Full technical/project context:** [`docs/project-summary.md`](./docs/project-summary.md)
+- **Open issues / to-do:** [`docs/to-do.md`](./docs/to-do.md)
 
-This is a runtime companion mod, not a Rampant Fixed patch. It does not modify Rampant internals. Instead, it periodically checks for valid high-evolution ocean migration opportunities and creates an enemy landfall on the far side of deep water.
+## Overview
 
-## How it works
+Ocean Migration is a runtime companion mod. It does not modify enemy behavior, terrain generation, recipes, technology, or other prototypes. Instead, it periodically checks for valid high-evolution ocean migration opportunities and creates an enemy landfall on the far side of deep water.
 
-- Runs once per minute.
-- Enabled by default, but can be disabled with `Enable Ocean Migration` in Map settings.
+Behavior summary:
+
+- Runs once per minute on surfaces with connected players.
+- Enabled by default, toggleable via `Enable Ocean Migration` in Map settings.
 - Requires enemy evolution to be at least `Minimum enemy evolution`.
 - Accumulates an internal migration budget from enemy evolution over time.
 - Spends budget when a beachhead is successfully created.
-- Searches for enemy nests near connected players.
-- Scans from those nests toward the nearest player and nearby angles.
-- If the scan crosses at least `Minimum water crossing distance`, includes at least one deep/unpassable water tile, and finds generated land beyond it, the mod creates a small landfall patch and places enemy nests.
+- Samples existing enemy nests, scans outward along lightweight rays, and looks for a crossing that includes at least one deep/unpassable water tile and a valid landfall beyond it.
+
+## Key features
+
+- **Island-map friendly.** Lets biters re-appear across oceans once evolution is high enough, instead of leaving you permanently isolated.
+- **UPS-safe.** No global pathfinding, no continent flood-fills — just sampled source nests and ray-based scans.
+- **Modded-spawner aware.** Finds sources by `unit-spawner` type and preserves the source prototype when creating the migrated nest, so Rampant and other modded nests are supported.
+- **Alien Biomes compatible.** Land, water, and deep-water classification is collision-based, not vanilla tile-name based.
+- **Factorissimo aware.** Skips factory-floor / non-planet / interior helper surfaces.
+- **Self-contained budget.** Does not reduce Factorio's global evolution factor; uses its own configurable migration points system.
+- **Resilient ocean scan (0.3.3).** Scans keep going past small ponds, shallow shoreline inlets, and tiny islands until they hit real deep-ocean crossings or run out of range.
+
+## Install and use
+
+1. Copy the mod into your Factorio `mods/` directory, or install the packaged zip (`ocean-migration_0.3.3.zip`).
+2. Launch Factorio 2.0 and enable **Ocean Migration** in the mod list.
+3. Load an existing save or start a new one — no prototype changes, so it is safe to add mid-playthrough.
+4. Optional: adjust Map settings under *Settings > Mod settings > Map* to tune cadence, evolution threshold, and budget scaling.
 
 ## Suggested settings
 
 - Minimum enemy evolution: `0.50` to `0.90`
 - Minimum water crossing distance: `64` or higher
-- Minimum migration distance, chunks: `3` by default, equal to 96 tiles; raise it if you want longer island-to-mainland migrations
+- Minimum migration distance, chunks: `3` by default (96 tiles); raise it for longer island-to-mainland migrations
 - Maximum water crossing distance: `512` or higher for ocean maps
 - Migration cooldown: `30` to `90` minutes
 - Migration budget scaling: `1.0`, or higher for more frequent migrations
 - Nests per beachhead: `2` to `4`
-- EXPERIMENTAL: Biters can build islands: disabled by default
+- EXPERIMENTAL: Biters can build islands — disabled by default
 - Experimental island radius: `6` to `10` if island-building is enabled
 - Experimental island tile: `auto` for Alien Biomes compatibility
 
 ## Commands
 
-- `/omb-status` shows the current surface's beachhead count and cooldown.
-- `/omb-status` also shows the current migration budget.
-- `/omb-reset` resets counters and cooldowns. Admin only.
-- `/omb-force` force-runs one migration attempt on your current surface. Admin only. Ignores budget, cooldown, evolution threshold, and surface cap, but still requires a valid enemy nest, deep/unpassable water crossing, and legal beachhead location. On success, it prints both the sampled source nest and new nest GPS links.
+- `/omb-status` — shows the current surface's beachhead count, cooldown, and migration budget.
+- `/omb-reset` — resets counters and cooldowns. Admin only.
+- `/omb-force` — force-runs one migration attempt on your current surface. Admin only. Bypasses budget, cooldown, evolution threshold, and surface cap, but still requires a valid enemy nest, a deep/unpassable water crossing, the configured minimum migration distance, and a legal beachhead location. On success, it prints GPS links for both the sampled source nest and the new nest.
 
 ## Migration budget
 
-Ocean Migration does not reduce Factorio's global evolution factor. Instead, it uses an internal budget that is safer for large modpacks:
+Ocean Migration uses its own internal budget instead of spending Factorio's global evolution factor:
 
 - Budget gained per minute = `Migration budget gain per minute * Migration budget scaling * current enemy evolution`.
 - Migration cost = `Base migration cost + water distance cost + nest cost`.
@@ -54,18 +75,27 @@ Set `Migration budget scaling` above `1.0` to make ocean migration happen more o
 
 ## Debugging
 
-Enable `Debug messages` in Map settings to print budget gain, skipped migrations, and placement failure reasons. It is disabled by default.
+Enable `Debug messages` in Map settings to print budget gain, skipped migrations, and placement failure reasons. It is disabled by default to avoid chat spam in large modpacks.
 
 ## Compatibility notes
 
-- Add to an existing save. It is enabled by default and can be disabled under Settings > Mod settings > Map.
-- The mod only scans generated chunks. It will not silently generate far-away oceans.
-- If `water_spitters` is active and the `water-biter-spawner` prototype exists, it can include that nest type.
-- If a migration starts from a modded enemy spawner, Ocean Migration tries to create that same spawner type at the beachhead first, then falls back to available vanilla/water-spitter spawners.
-- If Rampant Fixed is active, it should see the new enemy nests through normal script-raised build events and/or subsequent scanning, but this mod intentionally does not call Rampant's private internals.
-- Landfall tile placement is disabled by default through the `EXPERIMENTAL: Biters can build islands` checkbox. If enabled, it uses Factorio's `abort_on_collision` behavior and is wrapped defensively, so it should not delete modded entities, resources, machines, or hidden support entities to make room.
-- All settings are runtime-global. Loading the mod does not change prototypes, recipes, technology, enemies, surfaces, or map generation.
-- The active scan only runs on surfaces that currently have connected players, which is safer for Space Exploration, Space Age, Factorissimo-style surfaces, and large modpacks.
+- Safe to add to an existing save. All settings are runtime/map settings — no prototype changes.
+- The mod only scans **generated** chunks. It will not invent terrain in never-generated areas; migration there may fail until the area is charted.
+- Works with Rampant, Krastorio 2, Alien Biomes, Factorissimo, and large biter modpacks.
+- Source nests are found by `unit-spawner` type on the enemy force, so modded spawners work without hardcoded names.
+- The migrated nest tries to reuse the source spawner's prototype first, then falls back to available vanilla / water-spitter spawners if needed.
 - Factorissimo factory-floor surfaces and common non-planet helper surfaces are skipped.
-- Land/water detection uses tile collision layers, not tile names, so Alien Biomes terrain names are supported.
+- Land/water detection uses tile collision layers, not tile names, so Alien Biomes terrain is supported.
+- The active scan only runs on surfaces with connected players, which is safer for Space Exploration, Space Age, and Factorissimo-style setups.
 - Experimental island tile defaults to `auto`, which copies nearby shore terrain instead of forcing vanilla grass.
+- Landfall tile placement is disabled by default behind `EXPERIMENTAL: Biters can build islands`. When enabled, placement uses Factorio's `abort_on_collision` behavior and is wrapped defensively.
+
+## Current status
+
+- Version `0.3.3` — resilient ocean scan and modded spawner support.
+- Core migration loop, admin commands, budget, Factorissimo filtering, and Alien Biomes-compatible terrain checks are in place and working in normal play.
+- `/omb-force` can still fail on some island-to-mainland cases in live testing. See [`docs/to-do.md`](./docs/to-do.md) for the current open issues list.
+
+## More information
+
+For the full design rationale, gameplay concept, known gotchas, and future-improvement notes, see [`docs/project-summary.md`](./docs/project-summary.md).

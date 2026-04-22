@@ -822,6 +822,153 @@ local function on_current_both_resolved(surface_index, attempt)
   start_beach_search(surface_index, attempt)
 end
 
+local function offset_direction(base_dir, degrees)
+  local rad = math.rad(degrees)
+  local c = math.cos(rad)
+  local s = math.sin(rad)
+  return {
+    x = base_dir.x * c - base_dir.y * s,
+    y = base_dir.x * s + base_dir.y * c,
+  }
+end
+
+-- Walks from `source` toward `direction` in steps of `step`, counting water
+-- tiles crossed. Returns { anchor = {x,y}, water_crossed = int } on the first
+-- land tile past `min_water` water tiles, or nil if the ray exits generated
+-- chunks, exceeds max distance, or never crosses enough water.
+local function ray_to_beach_anchor(surface, source, direction, min_water, step, max_distance)
+  local water_crossed = 0
+  local distance = step
+  while distance <= max_distance do
+    local pos = {
+      x = source.x + direction.x * distance,
+      y = source.y + direction.y * distance,
+    }
+
+    if not is_generated(surface, pos) then
+      return nil
+    end
+
+    if is_water_tile(surface, pos) then
+      water_crossed = water_crossed + step
+    else
+      if water_crossed >= min_water then
+        return { anchor = pos, water_crossed = water_crossed }
+      end
+      -- Land reached too early (we haven't crossed enough water) — keep walking.
+    end
+
+    distance = distance + step
+  end
+
+  return nil
+end
+
+local function direction_from_source_to_pollution(source, pollution)
+  local dx = pollution.x - source.x
+  local dy = pollution.y - source.y
+  local length = math.sqrt(dx * dx + dy * dy)
+  if length < 1 then return nil end
+  return { x = dx / length, y = dy / length }
+end
+
+local function try_ray(surface_index, attempt)
+  local surface = game.surfaces[surface_index]
+  if not (surface and surface.valid) then
+    end_attempt(surface_index, "surface became invalid")
+    return
+  end
+
+  local beach = attempt.beach
+  local offset = beach.fan_offsets[beach.fan_i]
+  if not offset then
+    -- Fan exhausted.
+    if attempt.force_run and attempt.player_index then
+      local player = game.get_player(attempt.player_index)
+      if player and player.valid then
+        player.print(string.format(
+          "Ocean Migration: marooned source [gps=%d,%d,%s] — no reachable coastal landing after %d rays.",
+          math.floor(beach.source.x),
+          math.floor(beach.source.y),
+          surface.name,
+          #beach.fan_offsets))
+      end
+    end
+    end_attempt(surface_index, "no beachhead after full fan")
+    return
+  end
+
+  local base_dir = direction_from_source_to_pollution(beach.source, attempt.pollution_chunk)
+  if not base_dir then
+    -- Source and pollution overlap; should not happen, but handle gracefully.
+    end_attempt(surface_index, "source overlaps pollution target")
+    return
+  end
+
+  local direction = offset_direction(base_dir, offset)
+  local anchor_hit = ray_to_beach_anchor(
+    surface, beach.source, direction,
+    setting("omb-min-water-tiles"),
+    setting("omb-scan-step"),
+    1024)
+
+  if not anchor_hit then
+    beach.fan_i = beach.fan_i + 1
+    try_ray(surface_index, attempt)
+    return
+  end
+
+  local drifted = surface.find_non_colliding_position(
+    beach.spawner_name, anchor_hit.anchor, 16, 1, true)
+
+  if not drifted then
+    beach.fan_i = beach.fan_i + 1
+    try_ray(surface_index, attempt)
+    return
+  end
+
+  local drift_distance_sq = distance_sq(drifted, anchor_hit.anchor)
+  if drift_distance_sq > (24 * 24) then
+    beach.fan_i = beach.fan_i + 1
+    try_ray(surface_index, attempt)
+    return
+  end
+
+  -- Check the min-migration-distance guard too, otherwise we can drop a
+  -- beachhead on a short hop across a river that the pathfinder grudgingly
+  -- accepts but the player would find spammy.
+  local min_migration_distance = setting("omb-min-migration-chunks") * 32
+  if not far_enough_from_source(beach.source, drifted, min_migration_distance) then
+    beach.fan_i = beach.fan_i + 1
+    try_ray(surface_index, attempt)
+    return
+  end
+
+  -- Don't drop beachheads directly on a connected player either.
+  local min_player_distance = setting("omb-min-distance-from-player")
+  if not away_from_players(surface, drifted, min_player_distance) then
+    beach.fan_i = beach.fan_i + 1
+    try_ray(surface_index, attempt)
+    return
+  end
+
+  beach.current_anchor = anchor_hit.anchor
+  beach.current_drift = drifted
+  beach.water_crossed = anchor_hit.water_crossed
+
+  issue_path_request(surface, drifted, attempt.pollution_chunk,
+                     "beach", surface_index, beach.spawner_name)
+end
+
+local function advance_ray_fan(surface_index, attempt)
+  attempt.beach.fan_i = attempt.beach.fan_i + 1
+  try_ray(surface_index, attempt)
+end
+
+start_beach_search = function(surface_index, attempt)
+  try_ray(surface_index, attempt)
+end
+
 local function resolve_wall(surface_index, attempt, success)
   if not attempt.current then return end
   attempt.current.wall_result = success and "success" or "fail"
@@ -838,8 +985,19 @@ local function resolve_pollution(surface_index, attempt, success)
   end
 end
 
+-- Forward declaration; defined in Task 10.
+local finalize_beachhead_spawn = function(surface_index, attempt) end
+
 -- resolve_beach stays a stub here; filled in Task 9.
 local function resolve_beach(surface_index, attempt, success)
+  if not attempt.beach then return end
+  if not success then
+    advance_ray_fan(surface_index, attempt)
+    return
+  end
+
+  -- On success, finalize spawn. This calls into Task 10's spawn helper.
+  finalize_beachhead_spawn(surface_index, attempt)
 end
 
 -- ---------------------------------------------------------------------------

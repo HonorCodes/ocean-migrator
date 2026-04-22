@@ -986,7 +986,79 @@ local function resolve_pollution(surface_index, attempt, success)
 end
 
 -- Forward declaration; defined in Task 10.
-local finalize_beachhead_spawn = function(surface_index, attempt) end
+local finalize_beachhead_spawn = function(surface_index, attempt)
+  local surface = game.surfaces[surface_index]
+  if not (surface and surface.valid) then
+    end_attempt(surface_index, "surface became invalid")
+    return
+  end
+
+  local beach = attempt.beach
+  local state = storage.omb.surfaces[surface_index]
+
+  local landfall = {
+    x = beach.current_drift.x,
+    y = beach.current_drift.y,
+    crossed = beach.water_crossed,
+  }
+
+  local cost = migration_cost(landfall)
+
+  if not attempt.force_run and (state.budget or 0) < cost then
+    end_attempt(surface_index, string.format(
+      "insufficient budget %d/%d", math.floor(state.budget or 0), cost))
+    return
+  end
+
+  local source_entity = game.get_entity_by_unit_number(attempt.current.unit_number)
+  local fallback_names = available_spawners()
+  local spawner_names = spawner_name_options(source_entity, fallback_names)
+
+  local placed, placed_position = place_beachhead(surface, landfall, spawner_names)
+
+  if placed <= 0 then
+    -- Rare race with chunk modification. Try the next ray.
+    advance_ray_fan(surface_index, attempt)
+    return
+  end
+
+  if not attempt.force_run then
+    state.budget = math.max(0, (state.budget or 0) - cost)
+    state.next_tick = game.tick + setting("omb-cooldown-minutes") * TICKS_PER_MINUTE
+  end
+  state.beachheads = state.beachheads + 1
+
+  chart_for_players(surface, landfall)
+
+  if setting("omb-notify") then
+    local notify_position = placed_position or landfall
+    game.print({
+      "ocean-migration-beachheads.beachhead-created",
+      surface.name,
+      math.floor(notify_position.x),
+      math.floor(notify_position.y),
+      attempt.force_run and 0 or cost,
+      math.floor(landfall.crossed or 0),
+    })
+  end
+
+  if attempt.force_run and attempt.player_index then
+    local player = game.get_player(attempt.player_index)
+    if player and player.valid then
+      player.print(string.format(
+        "Ocean Migration forced a beachhead. Source nest: [gps=%d,%d,%s]. New nest: [gps=%d,%d,%s]. Water tiles crossed: %d.",
+        math.floor(beach.source.x),
+        math.floor(beach.source.y),
+        surface.name,
+        math.floor((placed_position or landfall).x),
+        math.floor((placed_position or landfall).y),
+        surface.name,
+        math.floor(landfall.crossed or 0)))
+    end
+  end
+
+  surface_state(surface).attempt = nil
+end
 
 -- resolve_beach stays a stub here; filled in Task 9.
 local function resolve_beach(surface_index, attempt, success)

@@ -731,7 +731,7 @@ local function resolve_source_collision_mask(spawner_name)
     return fallback.collision_mask
   end
 
-  return { layers = { ["player"] = true, ["water_tile"] = true } }
+  return { layers = { ["player-layer"] = true, ["water-tile"] = true } }
 end
 
 local function issue_path_request(surface, start, goal, purpose, surface_index, spawner_name)
@@ -906,8 +906,11 @@ script.on_event(defines.events.on_script_path_request_finished, function(event)
 
   if event.try_again_later then
     -- Retry logic is added in Task 12 via the housekeeping tick. Here we mark
-    -- and bail so the housekeeper picks it up on the next pass.
+    -- and bail so the housekeeper picks it up on the next pass. Reset
+    -- issued_tick so the 30-tick gap measures from "now", not from the
+    -- original (long-ago) request time.
     pending.try_again_later = true
+    pending.issued_tick = game.tick
     return
   end
 

@@ -1,5 +1,6 @@
 local TICKS_PER_MINUTE = 60 * 60
 local CHECK_INTERVAL = 60 * 60
+local WALL_BUCKET_SIZE = 256
 local DIRECTIONS = {
   { x = 1, y = 0 },
   { x = -1, y = 0 },
@@ -644,6 +645,74 @@ local function gather_sorted_candidates(surface, target_position)
   end)
 
   return scored
+end
+
+local function wall_bucket_key(x, y)
+  return math.floor(x / WALL_BUCKET_SIZE) .. ":" .. math.floor(y / WALL_BUCKET_SIZE)
+end
+
+local function build_wall_index(surface, player_force)
+  local entities = surface.find_entities_filtered({
+    force = player_force,
+    type = { "wall", "gate" },
+  })
+
+  local index = { buckets = {}, count = 0 }
+  for _, entity in ipairs(entities) do
+    if entity.valid then
+      local pos = entity.position
+      local key = wall_bucket_key(pos.x, pos.y)
+      index.buckets[key] = index.buckets[key] or {}
+      index.buckets[key][#index.buckets[key] + 1] = { x = pos.x, y = pos.y }
+      index.count = index.count + 1
+    end
+  end
+
+  return index
+end
+
+local function nearest_wall(index, pos)
+  if not index or index.count == 0 then
+    return nil
+  end
+
+  local bx = math.floor(pos.x / WALL_BUCKET_SIZE)
+  local by = math.floor(pos.y / WALL_BUCKET_SIZE)
+  local best = nil
+  local best_d = nil
+
+  for dx = -1, 1 do
+    for dy = -1, 1 do
+      local key = (bx + dx) .. ":" .. (by + dy)
+      local bucket = index.buckets[key]
+      if bucket then
+        for _, wall_pos in ipairs(bucket) do
+          local d = distance_sq(pos, wall_pos)
+          if not best_d or d < best_d then
+            best_d = d
+            best = wall_pos
+          end
+        end
+      end
+    end
+  end
+
+  -- If nothing was in the 9 neighboring buckets, widen the search once to the
+  -- full index. This happens on very sparse wall layouts; accept O(index.count)
+  -- for the rare case.
+  if not best then
+    for _, bucket in pairs(index.buckets) do
+      for _, wall_pos in ipairs(bucket) do
+        local d = distance_sq(pos, wall_pos)
+        if not best_d or d < best_d then
+          best_d = d
+          best = wall_pos
+        end
+      end
+    end
+  end
+
+  return best
 end
 
 local function attempt_surface_migration(surface, event_tick, force_run)

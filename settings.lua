@@ -44,24 +44,6 @@ data:extend({
   },
   {
     type = "int-setting",
-    name = "omb-max-water-tiles",
-    setting_type = "runtime-global",
-    default_value = 512,
-    minimum_value = 16,
-    maximum_value = 4096,
-    order = "e"
-  },
-  {
-    type = "int-setting",
-    name = "omb-source-search-radius",
-    setting_type = "runtime-global",
-    default_value = 1536,
-    minimum_value = 128,
-    maximum_value = 8192,
-    order = "f"
-  },
-  {
-    type = "int-setting",
     name = "omb-scan-step",
     setting_type = "runtime-global",
     default_value = 16,

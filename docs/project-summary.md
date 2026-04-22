@@ -56,13 +56,19 @@ For each attempt, it generally:
 
 It does not run full pathfinding, flood-fill continents, or global map analysis. This is intentional for UPS safety.
 
-## Current version behavior: 0.3.3
+## Current version behavior: 0.4.0
 
-Version `0.3.3` fixed an important ocean scan issue.
+Version `0.4.0` replaces the ray-based ocean scan with a pollution-directed, pathfinder-driven migration algorithm.
 
-Previously, if the scan ray hit a small invalid water segment first, such as a pond, shallow shoreline, little inlet, or tiny island, it could abandon that ray immediately. This caused cases where an obvious island-to-mainland ocean path existed, but `/omb-force` reported no valid crossing.
+Instead of scanning outward from random nests along angular rays, the mod first identifies the surface's highest-pollution chunk as the migration target. This grounds the algorithm in the actual game state: enemies should be drawn toward where the player's factory produces the most pollution, not toward a geometrically arbitrary direction.
 
-The fix changed the landfall scanner so that invalid short/no-deep-water segments reset the segment state and continue scanning along the same ray until the maximum crossing distance. This allows the scan to pass over small ponds, coastal wiggles, shallows, and little islands before finding the real deep-ocean crossing.
+Candidate source nests are gathered across the whole surface and sorted by their distance to the pollution chunk. For each candidate, the mod asks Factorio's native pathfinder whether the nest can reach a player wall or gate, and whether it can reach the pollution chunk directly. A nest qualifies as "marooned" — and therefore a valid migration source — only when it fails both of those reachability checks. This replaces the old static max-crossing-distance cap with a semantically correct test: the nest is genuinely isolated from the player's base by impassable water.
+
+Beachhead placement follows from the identified source. Rather than depositing the new nest at an arbitrary landfall point, the mod finds the coastal shore nearest to the marooned source island and validates the placement with a round-trip pathfinder check before spawning. The result is a landing site that is topographically near the source and confirmed reachable from player territory.
+
+Admin commands have been updated to match the new algorithm. `/omb-force` now runs the full pollution-directed selection and reports its result via an async reply sequence that includes GPS links for source and destination. `/omb-status` shows in-flight attempt state. `/omb-reset` clears state as before. A new `/omb-diagnose` command is read-only and prints the algorithm's current view of the surface: pollution target chunk, candidate nest list with reachability results, wall count, current budget, and in-flight attempt state.
+
+For the full design rationale and algorithm details, see [`docs/specs/2026-04-22-pollution-directed-migration-design.md`](./docs/specs/2026-04-22-pollution-directed-migration-design.md).
 
 ## Important distinction: loaded vs generated chunks
 
@@ -295,11 +301,11 @@ The most important gotchas for future work:
 
 2. **Minimum distance can block nearby spawns.** Default is 3 chunks. This is intentional to prevent same-shoreline hops.
 
-3. **Max crossing distance can block very large oceans.** If the mainland is farther than the configured max crossing distance, migration will fail.
+3. **Max crossing distance is no longer a static cap.** The pathfinder-driven reachability check replaces the old static max-crossing-distance limit. Whether a nest can reach player walls or the pollution chunk is now determined by Factorio's native pathfinder, which naturally handles large oceans based on actual passability rather than a tile-count threshold.
 
-4. **Source search radius matters.** If no enemy unit-spawner is near a connected player within the configured source radius, `/omb-force` may report no nearby spawners.
+4. **Source search is now whole-surface.** The 0.4.0 algorithm gathers candidate nests across the entire surface, not within a radius around connected players. `/omb-force` will report no candidates only if there are genuinely no enemy unit-spawners on the surface at all.
 
-5. **Ray-based scanning is approximate.** It is intentionally lightweight, so it can miss some valid paths depending on angle/sample density.
+5. **Ray-based coastal scanning is still approximate.** The 5-ray angular fan used to find the coastal landing near the source island is intentionally lightweight. Each ray now ends with a real pathfinder check before a beachhead is confirmed, so a ray miss does not produce a false positive, but valid landing sites may still be missed if none of the five angles align well with available coast.
 
 6. **Modded spawner prototypes must be valid `unit-spawner`s.** Rampant-style nests should work, but exotic mods that use unusual entity types may not.
 

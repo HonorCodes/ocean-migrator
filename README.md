@@ -22,7 +22,8 @@ Behavior summary:
 - Requires enemy evolution to be at least `Minimum enemy evolution`.
 - Accumulates an internal migration budget from enemy evolution over time.
 - Spends budget when a beachhead is successfully created.
-- Samples existing enemy nests, scans outward along lightweight rays, and looks for a crossing that includes at least one deep/unpassable water tile and a valid landfall beyond it.
+- For each attempt: finds the surface's highest-pollution chunk, gathers all enemy nests sorted by distance to pollution, and tests each nest with the game's native pathfinder. A nest is migrated from only when it can reach neither a player wall/gate nor the pollution chunk.
+- Beachheads land on the coastal shore nearest the marooned source, validated by a round-trip pathfinder check before spawning.
 
 ## Key features
 
@@ -59,6 +60,7 @@ Behavior summary:
 - `/omb-status` — shows the current surface's beachhead count, cooldown, and migration budget.
 - `/omb-reset` — resets counters and cooldowns. Admin only.
 - `/omb-force` — force-runs one migration attempt on your current surface. Admin only. Bypasses budget, cooldown, evolution threshold, and surface cap, but still requires a valid enemy nest, a deep/unpassable water crossing, the configured minimum migration distance, and a legal beachhead location. On success, it prints GPS links for both the sampled source nest and the new nest.
+- `/omb-diagnose` — admin only. Prints the algorithm's current view of the surface (pollution target, candidate list, walls count, budget, in-flight attempt state). Read-only; does not trigger migration.
 
 ## Migration budget
 
@@ -92,9 +94,9 @@ Enable `Debug messages` in Map settings to print budget gain, skipped migrations
 
 ## Current status
 
-- Version `0.3.3` — resilient ocean scan and modded spawner support.
-- Core migration loop, admin commands, budget, Factorissimo filtering, and Alien Biomes-compatible terrain checks are in place and working in normal play.
-- `/omb-force` can still fail on some island-to-mainland cases in live testing. See [`docs/to-do.md`](./docs/to-do.md) for the current open issues list.
+- Version `0.4.0` — pollution-directed migration with Factorio pathfinder integration.
+- Core migration loop, admin commands (including the new `/omb-diagnose`), budget, Factorissimo filtering, and Alien Biomes-compatible terrain checks are in place.
+- Source-of-truth reachability now uses Factorio's native pathfinder. See [`docs/specs/2026-04-22-pollution-directed-migration-design.md`](./docs/specs/2026-04-22-pollution-directed-migration-design.md) for the design rationale and [`docs/test-plan.md`](./docs/test-plan.md) for the acceptance matrix.
 
 ## More information
 

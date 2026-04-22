@@ -1,6 +1,11 @@
 local TICKS_PER_MINUTE = 60 * 60
 local CHECK_INTERVAL = 60 * 60
 local WALL_BUCKET_SIZE = 256
+local PATH_RETRY_MAX = 3
+local PATH_RETRY_GAP_TICKS = 30
+local PATH_RADIUS = 8
+local PATH_BOUNDING_BOX = { { -0.4, -0.4 }, { 0.4, 0.4 } }
+local ATTEMPT_ORPHAN_TICKS = 600
 local DIRECTIONS = {
   { x = 1, y = 0 },
   { x = -1, y = 0 },
@@ -715,6 +720,66 @@ local function nearest_wall(index, pos)
   return best
 end
 
+local function resolve_source_collision_mask(spawner_name)
+  local proto = spawner_name and prototypes.entity[spawner_name]
+  if proto and proto.collision_mask then
+    return proto.collision_mask
+  end
+
+  local fallback = prototypes.entity["biter-spawner"]
+  if fallback and fallback.collision_mask then
+    return fallback.collision_mask
+  end
+
+  return { layers = { ["player"] = true, ["water_tile"] = true } }
+end
+
+local function issue_path_request(surface, start, goal, purpose, surface_index, spawner_name)
+  local mask = resolve_source_collision_mask(spawner_name)
+
+  local request_id = surface.request_path({
+    bounding_box = PATH_BOUNDING_BOX,
+    collision_mask = mask,
+    start = start,
+    goal = goal,
+    force = game.forces.enemy,
+    radius = PATH_RADIUS,
+    pathfind_flags = {
+      allow_destroy_friendly_entities = false,
+      cache = true,
+      low_priority = true,
+      prefer_straight_paths = false,
+    },
+  })
+
+  if not request_id then
+    return nil
+  end
+
+  storage.omb.pending_paths[request_id] = {
+    surface_index = surface_index,
+    purpose = purpose,
+    issued_tick = game.tick,
+    retries = 0,
+    start = { x = start.x, y = start.y },
+    goal = { x = goal.x, y = goal.y },
+    spawner_name = spawner_name,
+  }
+
+  return request_id
+end
+
+-- These three are filled out in Tasks 8 and 9. The stub body exists so the
+-- event handler below can route without NPE'ing.
+local function resolve_wall(surface_index, attempt, success)
+end
+
+local function resolve_pollution(surface_index, attempt, success)
+end
+
+local function resolve_beach(surface_index, attempt, success)
+end
+
 local function attempt_surface_migration(surface, event_tick, force_run)
   local state = surface_state(surface)
   local enemy = game.forces.enemy
@@ -831,6 +896,38 @@ script.on_configuration_changed(function()
 end)
 
 script.on_nth_tick(CHECK_INTERVAL, check_all_surfaces)
+
+script.on_event(defines.events.on_script_path_request_finished, function(event)
+  ensure_storage()
+  local pending = storage.omb.pending_paths[event.id]
+  if not pending then
+    return
+  end
+
+  if event.try_again_later then
+    -- Retry logic is added in Task 12 via the housekeeping tick. Here we mark
+    -- and bail so the housekeeper picks it up on the next pass.
+    pending.try_again_later = true
+    return
+  end
+
+  storage.omb.pending_paths[event.id] = nil
+
+  local surface_state_entry = storage.omb.surfaces[pending.surface_index]
+  local attempt = surface_state_entry and surface_state_entry.attempt
+  if not attempt then
+    return
+  end
+
+  local success = (event.path ~= nil)
+  if pending.purpose == "wall" then
+    resolve_wall(pending.surface_index, attempt, success)
+  elseif pending.purpose == "pollution" then
+    resolve_pollution(pending.surface_index, attempt, success)
+  elseif pending.purpose == "beach" then
+    resolve_beach(pending.surface_index, attempt, success)
+  end
+end)
 
 commands.add_command("omb-reset", "Reset Ocean Migration counters.", function(command)
   local player = command.player_index and game.get_player(command.player_index) or nil

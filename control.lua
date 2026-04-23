@@ -1077,6 +1077,10 @@ local function start_attempt(surface, force_run, player_index)
   -- rather than a plain nearest-N truncation. Guarantees the sample spans
   -- the full distance range to pollution, so water-isolated clusters far
   -- from the factory aren't silently dropped when the mainland is dense.
+  -- The stratified branch uses an endpoint-inclusive stride so the very
+  -- farthest chunk-rep is always in the sample (handles the case where an
+  -- isolated island sits at the extreme far end of the sorted list with
+  -- no mainland beyond it).
   local max_samples = setting("omb-max-samples-per-attempt")
   if #candidates > max_samples then
     local guaranteed = math.max(1, math.floor(max_samples / 3))
@@ -1095,11 +1099,24 @@ local function start_attempt(surface, force_run, player_index)
       local pool_end = #candidates
       local pool_size = pool_end - pool_start + 1
       if pool_size > 0 then
-        local stride = pool_size / remaining
-        for i = 1, remaining do
-          local idx = pool_start + math.floor((i - 1) * stride)
-          if idx > pool_end then idx = pool_end end
-          sampled[guaranteed + i] = candidates[idx]
+        if pool_size <= remaining then
+          for i = 1, pool_size do
+            sampled[guaranteed + i] = candidates[pool_start + i - 1]
+          end
+        elseif remaining == 1 then
+          sampled[guaranteed + 1] = candidates[pool_end]
+        else
+          -- Endpoint-inclusive: divide the span (pool_size - 1) across
+          -- (remaining - 1) steps so i=1 hits pool_start and i=remaining
+          -- hits pool_end. The +0.5 rounds to the nearest integer index
+          -- instead of always flooring.
+          local span = pool_size - 1
+          local stride = span / (remaining - 1)
+          for i = 1, remaining do
+            local idx = pool_start + math.floor((i - 1) * stride + 0.5)
+            if idx > pool_end then idx = pool_end end
+            sampled[guaranteed + i] = candidates[idx]
+          end
         end
       end
     end

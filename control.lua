@@ -317,17 +317,26 @@ local function available_spawners()
     end
   end
 
+  -- Enumerate every unit-spawner prototype so modded variants (Rampant,
+  -- K2, etc.) are eligible alongside vanilla. Previously this was hard-coded
+  -- to biter-spawner/spitter-spawner/water-biter-spawner, which meant
+  -- beachheads on modded maps spawned vanilla nests even when the source
+  -- cluster was a modded variant. `omb-use-water-spitters` still gates the
+  -- vanilla water-biter-spawner; modded water variants are left to the mod
+  -- that registered them.
+  local skip_water_biter = not setting("omb-use-water-spitters")
+
   if prototypes and prototypes.entity then
-    if prototypes.entity["biter-spawner"] then
-      add("biter-spawner")
+    for name, proto in pairs(prototypes.entity) do
+      local ok, kind = pcall(function() return proto.type end)
+      if ok and kind == "unit-spawner"
+         and not (skip_water_biter and name == "water-biter-spawner") then
+        add(name)
+      end
     end
-    if prototypes.entity["spitter-spawner"] then
-      add("spitter-spawner")
-    end
-    if setting("omb-use-water-spitters") and prototypes.entity["water-biter-spawner"] then
-      add("water-biter-spawner")
-    end
-  else
+  end
+
+  if #names == 0 then
     add("biter-spawner")
     add("spitter-spawner")
   end
@@ -738,7 +747,13 @@ end
 -- land tile past `min_water` water tiles, or nil if the ray exits generated
 -- chunks, exceeds max distance, or never crosses enough water.
 local function ray_to_beach_anchor(surface, source, direction, min_water, step, max_distance)
+  -- The ray lands on the first land tile past a single continuous water
+  -- segment of at least `min_water` tiles. Previously this tracked the total
+  -- water crossed along the whole ray, which on maps with inland lakes would
+  -- walk past the first mainland coast and accumulate lake tiles until the
+  -- total threshold was met — dropping the beachhead deep inland.
   local water_crossed = 0
+  local segment_water = 0
   local distance = step
   while distance <= max_distance do
     local pos = {
@@ -752,11 +767,14 @@ local function ray_to_beach_anchor(surface, source, direction, min_water, step, 
 
     if is_water_tile(surface, pos) then
       water_crossed = water_crossed + step
+      segment_water = segment_water + step
     else
-      if water_crossed >= min_water then
+      if segment_water >= min_water then
         return { anchor = pos, water_crossed = water_crossed }
       end
-      -- Land reached too early (we haven't crossed enough water) — keep walking.
+      -- Land reached after a too-narrow crossing (river, puddle). Reset the
+      -- segment counter and keep walking toward the pollution direction.
+      segment_water = 0
     end
 
     distance = distance + step

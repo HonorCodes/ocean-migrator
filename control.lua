@@ -716,7 +716,7 @@ local function on_current_both_resolved(surface_index, attempt)
   end
 
   -- Both failed → marooned.
-  if attempt.force_run and attempt.player_index then
+  if setting("omb-debug") and attempt.force_run and attempt.player_index then
     local player = game.get_player(attempt.player_index)
     if player and player.valid then
       player.print(string.format(
@@ -843,7 +843,7 @@ local function try_ray(surface_index, attempt)
   while true do
     local offset = beach.fan_offsets[beach.fan_i]
     if not offset then
-      if attempt.force_run and attempt.player_index then
+      if debug_on then
         local player = game.get_player(attempt.player_index)
         if player and player.valid then
           player.print(string.format(
@@ -1063,12 +1063,10 @@ local finalize_beachhead_spawn = function(surface_index, attempt)
       surface.name,
       math.floor(notify_position.x),
       math.floor(notify_position.y),
-      attempt.force_run and 0 or cost,
-      math.floor(landfall.crossed or 0),
     })
   end
 
-  if attempt.force_run and attempt.player_index then
+  if setting("omb-debug") and attempt.force_run and attempt.player_index then
     local player = game.get_player(attempt.player_index)
     if player and player.valid then
       player.print(string.format(
@@ -1106,25 +1104,25 @@ end
 -- Task 7: enumerate-stage driver
 -- ---------------------------------------------------------------------------
 
-local function attempt_reply(attempt, message)
-  if attempt.player_index then
-    local player = game.get_player(attempt.player_index)
-    if player and player.valid then
-      player.print(message)
-    end
-  elseif setting("omb-debug") then
-    game.print(message)
-  end
-end
-
 end_attempt = function(surface_index, reason, extra)
   local surface_state_entry = storage.omb.surfaces[surface_index]
   if not surface_state_entry then return end
   local attempt = surface_state_entry.attempt
   if not attempt then return end
 
-  if attempt.force_run or setting("omb-debug") then
-    attempt_reply(attempt, "Ocean Migration: " .. reason)
+  -- Reason messages are diagnostic; only surfaced when omb-debug is on. The
+  -- notify setting covers the single user-visible event (successful migration)
+  -- through the separate beachhead-created locale string.
+  if setting("omb-debug") then
+    local message = "Ocean Migration: " .. reason
+    if attempt.player_index then
+      local player = game.get_player(attempt.player_index)
+      if player and player.valid then
+        player.print(message)
+      end
+    else
+      game.print(message)
+    end
   end
 
   surface_state_entry.attempt = nil
@@ -1139,7 +1137,7 @@ issue_candidate_paths = function(surface_index, attempt)
 
   local candidate = attempt.candidates[attempt.candidate_i]
   if not candidate then
-    if attempt.force_run and attempt.player_index then
+    if setting("omb-debug") and attempt.force_run and attempt.player_index then
       local player = game.get_player(attempt.player_index)
       if player and player.valid then
         local closest = attempt.candidates[1]
@@ -1329,7 +1327,7 @@ local function start_attempt(surface, force_run, player_index)
     beach = nil,
   }
 
-  if force_run and player_index then
+  if setting("omb-debug") and force_run and player_index then
     local player = game.get_player(player_index)
     if player and player.valid then
       player.print(string.format(
@@ -1479,18 +1477,20 @@ script.on_configuration_changed(function()
   if settings.global["omb-scan-step"] and
      settings.global["omb-scan-step"].value == 16 then
     settings.global["omb-scan-step"] = { value = 4 }
-    game.print(
-      "Ocean Migration: omb-scan-step auto-lowered from 16 to 4 for accurate " ..
-      "shoreline detection on updated save. See Mod Settings → Runtime → " ..
-      "Ocean Migration to change it back if you want.")
+    if setting("omb-debug") then
+      game.print(
+        "Ocean Migration: omb-scan-step auto-lowered from 16 to 4 for accurate " ..
+        "shoreline detection on updated save.")
+    end
   end
   if settings.global["omb-min-water-tiles"] and
      settings.global["omb-min-water-tiles"].value == 64 then
     settings.global["omb-min-water-tiles"] = { value = 8 }
-    game.print(
-      "Ocean Migration: omb-min-water-tiles auto-lowered from 64 to 8 so " ..
-      "narrower straits count as ocean crossings. See Mod Settings if you " ..
-      "want a stricter threshold.")
+    if setting("omb-debug") then
+      game.print(
+        "Ocean Migration: omb-min-water-tiles auto-lowered from 64 to 8 so " ..
+        "narrower straits count as ocean crossings.")
+    end
   end
 end)
 

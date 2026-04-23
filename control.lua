@@ -745,8 +745,10 @@ end
 -- Walks from `source` toward `direction` in steps of `step`, counting water
 -- tiles crossed. Returns { anchor = {x,y}, water_crossed = int } on the first
 -- land tile past `min_water` water tiles, or nil if the ray exits generated
--- chunks, exceeds max distance, or never crosses enough water.
-local function ray_to_beach_anchor(surface, source, direction, min_water, step, max_distance)
+-- chunks, exceeds max distance, or never crosses enough water. If `trace`
+-- is a table, each completed water segment is appended as {w=int, rejected=bool}
+-- so callers can emit a debug summary even when a landing succeeds.
+local function ray_to_beach_anchor(surface, source, direction, min_water, step, max_distance, trace)
   -- The ray lands on the first land tile past a single continuous water
   -- segment of at least `min_water` tiles. Previously this tracked the total
   -- water crossed along the whole ray, which on maps with inland lakes would
@@ -762,6 +764,9 @@ local function ray_to_beach_anchor(surface, source, direction, min_water, step, 
     }
 
     if not is_generated(surface, pos) then
+      if trace and segment_water > 0 then
+        trace[#trace + 1] = { w = segment_water, rejected = true, ungenerated = true }
+      end
       return nil
     end
 
@@ -770,16 +775,25 @@ local function ray_to_beach_anchor(surface, source, direction, min_water, step, 
       segment_water = segment_water + step
     else
       if segment_water >= min_water then
+        if trace then
+          trace[#trace + 1] = { w = segment_water, rejected = false }
+        end
         return { anchor = pos, water_crossed = water_crossed }
       end
       -- Land reached after a too-narrow crossing (river, puddle). Reset the
       -- segment counter and keep walking toward the pollution direction.
+      if trace and segment_water > 0 then
+        trace[#trace + 1] = { w = segment_water, rejected = true }
+      end
       segment_water = 0
     end
 
     distance = distance + step
   end
 
+  if trace and segment_water > 0 then
+    trace[#trace + 1] = { w = segment_water, rejected = true, maxdist = true }
+  end
   return nil
 end
 
@@ -825,11 +839,48 @@ local function try_ray(surface_index, attempt)
   end
 
   local direction = offset_direction(base_dir, offset)
+  local debug_on = setting("omb-debug") and attempt.force_run and attempt.player_index
+  local trace = debug_on and {} or nil
+  local min_water = setting("omb-min-water-tiles")
   local anchor_hit = ray_to_beach_anchor(
     surface, beach.source, direction,
-    setting("omb-min-water-tiles"),
+    min_water,
     setting("omb-scan-step"),
-    1024)
+    1024, trace)
+
+  if debug_on then
+    local player = game.get_player(attempt.player_index)
+    if player and player.valid then
+      local parts = {}
+      for i, seg in ipairs(trace) do
+        local marker
+        if seg.ungenerated then
+          marker = "ungen"
+        elseif seg.maxdist then
+          marker = "maxdist"
+        elseif seg.rejected then
+          marker = "skip"
+        else
+          marker = "LAND"
+        end
+        parts[i] = string.format("%d(%s)", seg.w, marker)
+      end
+      local outcome
+      if anchor_hit then
+        outcome = string.format("landed @[%d,%d] total=%d",
+          math.floor(anchor_hit.anchor.x),
+          math.floor(anchor_hit.anchor.y),
+          anchor_hit.water_crossed)
+      else
+        outcome = "no landing"
+      end
+      player.print(string.format(
+        "OMB ray [fan %+d°] min=%d segments: %s → %s",
+        offset, min_water,
+        (#parts > 0) and table.concat(parts, " ") or "none",
+        outcome))
+    end
+  end
 
   if not anchor_hit then
     beach.fan_i = beach.fan_i + 1

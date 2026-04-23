@@ -28,8 +28,8 @@ data:extend({
     type = "int-setting",
     name = "omb-min-water-tiles",
     setting_type = "runtime-global",
-    default_value = 16,
-    minimum_value = 4,
+    default_value = 8,
+    minimum_value = 2,
     maximum_value = 1024,
     order = "d"
   },

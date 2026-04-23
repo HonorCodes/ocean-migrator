@@ -847,10 +847,11 @@ local function try_ray(surface_index, attempt)
   local debug_on = setting("omb-debug") and attempt.force_run and attempt.player_index
   local trace = debug_on and {} or nil
   local min_water = setting("omb-min-water-tiles")
+  local scan_step = setting("omb-scan-step")
   local anchor_hit = ray_to_beach_anchor(
     surface, beach.source, direction,
     min_water,
-    setting("omb-scan-step"),
+    scan_step,
     1024, trace)
 
   if debug_on then
@@ -880,8 +881,8 @@ local function try_ray(surface_index, attempt)
         outcome = "no landing"
       end
       player.print(string.format(
-        "OMB ray [fan %+d°] min=%d segments: %s → %s",
-        offset, min_water,
+        "OMB ray [fan %+d°] min=%d step=%d segments: %s → %s",
+        offset, min_water, scan_step,
         (#parts > 0) and table.concat(parts, " ") or "none",
         outcome))
     end
@@ -1429,6 +1430,31 @@ script.on_configuration_changed(function()
   storage.omb.pending_paths = {}
   for _, state in pairs(storage.omb.surfaces) do
     state.attempt = nil
+  end
+
+  -- Migration: on saves made before 0.4.8, omb-scan-step defaulted to 16 and
+  -- omb-min-water-tiles defaulted to 64. Both are too coarse and cause the
+  -- ray to miss narrow straits or drift the landing tens of tiles inland.
+  -- If either setting is still at its pre-0.4.8 default, lower it to the
+  -- new default so the user benefits immediately without hunting settings.
+  -- We only touch settings that match the EXACT old default; any hand-tuned
+  -- value (8, 12, 32, …) is left alone — the assumption that someone who
+  -- set it to 16 is a user who never changed it, is fair.
+  if settings.global["omb-scan-step"] and
+     settings.global["omb-scan-step"].value == 16 then
+    settings.global["omb-scan-step"] = { value = 4 }
+    game.print(
+      "Ocean Migration: omb-scan-step auto-lowered from 16 to 4 for accurate " ..
+      "shoreline detection on updated save. See Mod Settings → Runtime → " ..
+      "Ocean Migration to change it back if you want.")
+  end
+  if settings.global["omb-min-water-tiles"] and
+     settings.global["omb-min-water-tiles"].value == 64 then
+    settings.global["omb-min-water-tiles"] = { value = 8 }
+    game.print(
+      "Ocean Migration: omb-min-water-tiles auto-lowered from 64 to 8 so " ..
+      "narrower straits count as ocean crossings. See Mod Settings if you " ..
+      "want a stricter threshold.")
   end
 end)
 

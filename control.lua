@@ -652,6 +652,36 @@ local function on_current_both_resolved(surface_index, attempt)
     return
   end
 
+  -- Per-candidate debug: when omb-debug is on and this is a force_run,
+  -- print the verdict for each candidate so the admin can see which nests
+  -- were tested, where the wall target was, and which leg reported
+  -- success. Invaluable for diagnosing "why is the island marked reachable?"
+  -- cases (e.g., amphibious modded biters, same-island walls, shallow-water
+  -- paths, unreachable wall targets).
+  if setting("omb-debug") and attempt.force_run and attempt.player_index then
+    local player = game.get_player(attempt.player_index)
+    if player and player.valid then
+      local wall_info
+      if current.wall_target then
+        wall_info = string.format("wall→[%d,%d]=%s",
+          math.floor(current.wall_target.x),
+          math.floor(current.wall_target.y),
+          current.wall_result)
+      else
+        wall_info = "wall=skip(no-walls)"
+      end
+      player.print(string.format(
+        "OMB debug [%d/%d] nest %s [%d,%d] %s pollution=%s",
+        attempt.candidate_i,
+        #attempt.candidates,
+        current.spawner_name,
+        math.floor(current.nest_position.x),
+        math.floor(current.nest_position.y),
+        wall_info,
+        current.pollution_result))
+    end
+  end
+
   local reachable = (current.wall_result == "success") or
                     (current.pollution_result == "success")
 
@@ -1001,11 +1031,13 @@ issue_candidate_paths = function(surface_index, attempt)
     spawner_name = entity.name,
     wall_result = "pending",
     pollution_result = "pending",
+    wall_target = nil,
   }
 
   -- Path A: nearest wall, if any.
   local wall_pos = nearest_wall(attempt.wall_index, entity.position)
   if wall_pos then
+    attempt.current.wall_target = { x = wall_pos.x, y = wall_pos.y }
     issue_path_request(surface, entity.position, wall_pos, "wall",
                        surface_index, entity.name)
   else

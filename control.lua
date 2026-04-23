@@ -646,18 +646,25 @@ local function on_current_both_resolved(surface_index, attempt)
   local current = attempt.current
   if not current then return end
 
+  -- Look up the entity, but do NOT early-return before the debug print.
+  -- In 0.4.3 the entity validity check ran first; if get_entity_by_unit_number
+  -- returned nil for modded spawners (a documented 2.0 quirk for certain
+  -- prototypes), every candidate took the silent advance_candidate path and
+  -- no debug output ever fired. The per-candidate debug block below now runs
+  -- unconditionally for force_run + omb-debug, and includes the entity
+  -- lookup status ("ok", "nil", "invalid") so the admin can see at a glance
+  -- whether the bug is an entity-lookup failure, a pathfinder false positive,
+  -- or a same-island wall target.
   local candidate_entity = game.get_entity_by_unit_number(current.unit_number)
-  if not (candidate_entity and candidate_entity.valid) then
-    advance_candidate(surface_index, attempt)
-    return
+  local entity_status
+  if not candidate_entity then
+    entity_status = "nil"
+  elseif not candidate_entity.valid then
+    entity_status = "invalid"
+  else
+    entity_status = "ok"
   end
 
-  -- Per-candidate debug: when omb-debug is on and this is a force_run,
-  -- print the verdict for each candidate so the admin can see which nests
-  -- were tested, where the wall target was, and which leg reported
-  -- success. Invaluable for diagnosing "why is the island marked reachable?"
-  -- cases (e.g., amphibious modded biters, same-island walls, shallow-water
-  -- paths, unreachable wall targets).
   if setting("omb-debug") and attempt.force_run and attempt.player_index then
     local player = game.get_player(attempt.player_index)
     if player and player.valid then
@@ -666,20 +673,27 @@ local function on_current_both_resolved(surface_index, attempt)
         wall_info = string.format("wall→[%d,%d]=%s",
           math.floor(current.wall_target.x),
           math.floor(current.wall_target.y),
-          current.wall_result)
+          current.wall_result or "?")
       else
         wall_info = "wall=skip(no-walls)"
       end
       player.print(string.format(
-        "OMB debug [%d/%d] nest %s [%d,%d] %s pollution=%s",
-        attempt.candidate_i,
-        #attempt.candidates,
-        current.spawner_name,
-        math.floor(current.nest_position.x),
-        math.floor(current.nest_position.y),
+        "OMB debug [%d/%d] %s u#%d @[%d,%d] entity=%s %s pollution=%s",
+        attempt.candidate_i or 0,
+        #(attempt.candidates or {}),
+        current.spawner_name or "?",
+        current.unit_number or 0,
+        math.floor(current.nest_position and current.nest_position.x or 0),
+        math.floor(current.nest_position and current.nest_position.y or 0),
+        entity_status,
         wall_info,
-        current.pollution_result))
+        current.pollution_result or "?"))
     end
+  end
+
+  if entity_status ~= "ok" then
+    advance_candidate(surface_index, attempt)
+    return
   end
 
   local reachable = (current.wall_result == "success") or

@@ -646,19 +646,16 @@ local function on_current_both_resolved(surface_index, attempt)
   local current = attempt.current
   if not current then return end
 
-  -- Look up the entity, but do NOT early-return before the debug print.
-  -- In 0.4.3 the entity validity check ran first; if get_entity_by_unit_number
-  -- returned nil for modded spawners (a documented 2.0 quirk for certain
-  -- prototypes), every candidate took the silent advance_candidate path and
-  -- no debug output ever fired. The per-candidate debug block below now runs
-  -- unconditionally for force_run + omb-debug, and includes the entity
-  -- lookup status ("ok", "nil", "invalid") so the admin can see at a glance
-  -- whether the bug is an entity-lookup failure, a pathfinder false positive,
-  -- or a same-island wall target.
-  local candidate_entity = game.get_entity_by_unit_number(current.unit_number)
+  -- Use the stored LuaEntity reference instead of game.get_entity_by_unit_number.
+  -- The 2.0 API silently returns nil for unit-spawner prototypes because they
+  -- lack the get-by-unit-number flag, which made 0.4.3/0.4.4 treat every
+  -- candidate as entity=nil and silently advance without checking reachability.
+  -- Stored LuaEntity references remain valid across ticks and across save/load;
+  -- .valid flips to false only if the engine has destroyed the entity.
+  local candidate_entity = current.entity
   local entity_status
   if not candidate_entity then
-    entity_status = "nil"
+    entity_status = "missing"
   elseif not candidate_entity.valid then
     entity_status = "invalid"
   else
@@ -914,7 +911,7 @@ local finalize_beachhead_spawn = function(surface_index, attempt)
     return
   end
 
-  local source_entity = game.get_entity_by_unit_number(attempt.current.unit_number)
+  local source_entity = attempt.current.entity
   local fallback_names = available_spawners()
   local spawner_names = spawner_name_options(source_entity, fallback_names)
 
@@ -1039,8 +1036,14 @@ issue_candidate_paths = function(surface_index, attempt)
     return
   end
 
+  -- Store the LuaEntity reference directly. game.get_entity_by_unit_number
+  -- silently returns nil for unit-spawner prototypes in Factorio 2.0 because
+  -- they lack the get-by-unit-number prototype flag (confirmed against the
+  -- 2.0.76 Runtime Docs). Stored references remain valid until the entity is
+  -- destroyed and are the canonical way to carry an entity across ticks.
   attempt.current = {
     unit_number = candidate.unit_number,
+    entity = entity,
     nest_position = { x = entity.position.x, y = entity.position.y },
     spawner_name = entity.name,
     wall_result = "pending",

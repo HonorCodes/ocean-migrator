@@ -46,8 +46,8 @@ data:extend({
     type = "int-setting",
     name = "omb-scan-step",
     setting_type = "runtime-global",
-    default_value = 16,
-    minimum_value = 4,
+    default_value = 4,
+    minimum_value = 1,
     maximum_value = 64,
     order = "g"
   },

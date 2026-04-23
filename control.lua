@@ -429,7 +429,12 @@ local function place_beachhead(surface, landfall, spawner_names)
   create_landfall(surface, landfall, landfall_radius, tile_name)
 
   for _ = 1, nest_count do
-    local radius = math.max(landfall_radius + 8, 16)
+    -- Keep the nest cluster tight on the shoreline. The base case
+    -- (no experimental island-building) is a 6-tile radius — just
+    -- enough for a second/third spawner to sit next to the first
+    -- without overlap. Users who enable island-building opt into a
+    -- larger landfall_radius and get a proportional spawn area.
+    local radius = math.max(landfall_radius + 2, 6)
     local start_index = math.random(#spawner_names)
 
     for offset = 0, #spawner_names - 1 do
@@ -888,8 +893,13 @@ local function try_ray(surface_index, attempt)
     return
   end
 
+  -- Find the spawner's collision center as close to the shoreline anchor
+  -- as possible. Radius 6 is just enough to clear a 5x5 spawner footprint
+  -- off the water. The drift cap below (8 tiles) then rejects rays whose
+  -- nearest valid spot is further inland than a typical spawner half-width +
+  -- slack — keeping beachheads on the shoreline instead of walking them in.
   local drifted = surface.find_non_colliding_position(
-    beach.spawner_name, anchor_hit.anchor, 16, 1, true)
+    beach.spawner_name, anchor_hit.anchor, 6, 1, true)
 
   if not drifted then
     beach.fan_i = beach.fan_i + 1
@@ -898,7 +908,20 @@ local function try_ray(surface_index, attempt)
   end
 
   local drift_distance_sq = distance_sq(drifted, anchor_hit.anchor)
-  if drift_distance_sq > (24 * 24) then
+  local drift_distance = math.sqrt(drift_distance_sq)
+
+  if setting("omb-debug") and attempt.force_run and attempt.player_index then
+    local player = game.get_player(attempt.player_index)
+    if player and player.valid then
+      player.print(string.format(
+        "OMB drift: anchor @[%d,%d] → spawner @[%d,%d] (%.1f tiles inland)",
+        math.floor(anchor_hit.anchor.x), math.floor(anchor_hit.anchor.y),
+        math.floor(drifted.x), math.floor(drifted.y),
+        drift_distance))
+    end
+  end
+
+  if drift_distance_sq > (8 * 8) then
     beach.fan_i = beach.fan_i + 1
     try_ray(surface_index, attempt)
     return

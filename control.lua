@@ -733,6 +733,9 @@ local function on_current_both_resolved(surface_index, attempt)
     spawner_name = current.spawner_name,
     fan_offsets = { 0, 15, -15, 30, -30 },
     fan_i = 1,
+    -- continuation is set when a landing fails any check; try_ray then walks
+    -- from here on the same fan offset instead of jumping to the next.
+    continuation = nil,
   }
   start_beach_search(surface_index, attempt)
 end
@@ -810,6 +813,20 @@ local function direction_from_source_to_pollution(source, pollution)
   return { x = dx / length, y = dy / length }
 end
 
+-- try_ray walks the fan of 5 rays from the marooned source toward the pollution
+-- chunk, looking for a coastal landing that passes all filters. When a ray lands
+-- but the landing fails any check (drift too large, too close to source/player,
+-- or the beach-path pathfinder can't reach pollution), we do NOT skip to the
+-- next fan offset — instead we continue the SAME ray past the failed anchor
+-- and look for the next water→land transition further along. Only when a ray
+-- is fully exhausted (no more landings available within max_distance) does the
+-- fan advance.
+--
+-- The pre-pathfinder portion of this function is a synchronous loop (anchor
+-- → drift → guards → either issue path or continue). The pathfinder itself is
+-- async, so a successful anchor that survives all synchronous guards issues a
+-- path request and returns; the callback in resolve_beach either finalizes on
+-- success or sets beach.continuation and re-enters this function on failure.
 local function try_ray(surface_index, attempt)
   local surface = game.surfaces[surface_index]
   if not (surface and surface.valid) then
@@ -818,144 +835,157 @@ local function try_ray(surface_index, attempt)
   end
 
   local beach = attempt.beach
-  local offset = beach.fan_offsets[beach.fan_i]
-  if not offset then
-    -- Fan exhausted.
-    if attempt.force_run and attempt.player_index then
-      local player = game.get_player(attempt.player_index)
-      if player and player.valid then
-        player.print(string.format(
-          "Ocean Migration: marooned source [gps=%d,%d,%s] — no reachable coastal landing after %d rays.",
-          math.floor(beach.source.x),
-          math.floor(beach.source.y),
-          surface.name,
-          #beach.fan_offsets))
-      end
-    end
-    end_attempt(surface_index, "no beachhead after full fan")
-    return
-  end
-
-  local base_dir = direction_from_source_to_pollution(beach.source, attempt.pollution_chunk)
-  if not base_dir then
-    -- Source and pollution overlap; should not happen, but handle gracefully.
-    end_attempt(surface_index, "source overlaps pollution target")
-    return
-  end
-
-  local direction = offset_direction(base_dir, offset)
   local debug_on = setting("omb-debug") and attempt.force_run and attempt.player_index
-  local trace = debug_on and {} or nil
   local min_water = setting("omb-min-water-tiles")
   local scan_step = setting("omb-scan-step")
-  local anchor_hit = ray_to_beach_anchor(
-    surface, beach.source, direction,
-    min_water,
-    scan_step,
-    1024, trace)
+  local max_ray_distance = 1024
 
-  if debug_on then
-    local player = game.get_player(attempt.player_index)
-    if player and player.valid then
-      local parts = {}
-      for i, seg in ipairs(trace) do
-        local marker
-        if seg.ungenerated then
-          marker = "ungen"
-        elseif seg.maxdist then
-          marker = "maxdist"
-        elseif seg.rejected then
-          marker = "skip"
-        else
-          marker = "LAND"
+  while true do
+    local offset = beach.fan_offsets[beach.fan_i]
+    if not offset then
+      if attempt.force_run and attempt.player_index then
+        local player = game.get_player(attempt.player_index)
+        if player and player.valid then
+          player.print(string.format(
+            "Ocean Migration: marooned source [gps=%d,%d,%s] — no reachable coastal landing after %d rays.",
+            math.floor(beach.source.x),
+            math.floor(beach.source.y),
+            surface.name,
+            #beach.fan_offsets))
         end
-        parts[i] = string.format("%d(%s)", seg.w, marker)
       end
-      local outcome
-      if anchor_hit then
-        outcome = string.format("landed @[%d,%d] total=%d",
-          math.floor(anchor_hit.anchor.x),
-          math.floor(anchor_hit.anchor.y),
-          anchor_hit.water_crossed)
+      end_attempt(surface_index, "no beachhead after full fan")
+      return
+    end
+
+    local base_dir = direction_from_source_to_pollution(beach.source, attempt.pollution_chunk)
+    if not base_dir then
+      end_attempt(surface_index, "source overlaps pollution target")
+      return
+    end
+
+    local direction = offset_direction(base_dir, offset)
+
+    -- Continue from the previous failed landing on this ray if one exists,
+    -- otherwise start fresh from the marooned source.
+    local start_pos = beach.continuation or beach.source
+    local walked_from_source = 0
+    if beach.continuation then
+      walked_from_source = math.sqrt(distance_sq(beach.continuation, beach.source))
+    end
+    local remaining_distance = max_ray_distance - walked_from_source
+
+    local trace = debug_on and {} or nil
+    local anchor_hit
+    if remaining_distance > scan_step then
+      anchor_hit = ray_to_beach_anchor(
+        surface, start_pos, direction,
+        min_water, scan_step, remaining_distance, trace)
+    end
+
+    if debug_on then
+      local player = game.get_player(attempt.player_index)
+      if player and player.valid then
+        local parts = {}
+        if trace then
+          for i, seg in ipairs(trace) do
+            local marker
+            if seg.ungenerated then
+              marker = "ungen"
+            elseif seg.maxdist then
+              marker = "maxdist"
+            elseif seg.rejected then
+              marker = "skip"
+            else
+              marker = "LAND"
+            end
+            parts[i] = string.format("%d(%s)", seg.w, marker)
+          end
+        end
+        local outcome
+        if anchor_hit then
+          outcome = string.format("landed @[%d,%d] total=%d",
+            math.floor(anchor_hit.anchor.x),
+            math.floor(anchor_hit.anchor.y),
+            anchor_hit.water_crossed)
+        elseif remaining_distance <= scan_step then
+          outcome = "max-distance reached"
+        else
+          outcome = "no landing"
+        end
+        local continuation_note = beach.continuation and
+          string.format(" (cont from [%d,%d])",
+            math.floor(beach.continuation.x),
+            math.floor(beach.continuation.y))
+          or ""
+        player.print(string.format(
+          "OMB ray [fan %+d°]%s min=%d step=%d segments: %s → %s",
+          offset, continuation_note, min_water, scan_step,
+          (#parts > 0) and table.concat(parts, " ") or "none",
+          outcome))
+      end
+    end
+
+    if not anchor_hit then
+      -- Ray exhausted (no more land within remaining distance). Advance the fan.
+      beach.continuation = nil
+      beach.fan_i = beach.fan_i + 1
+      -- Loop continues with next fan offset.
+    else
+      local drifted = surface.find_non_colliding_position(
+        beach.spawner_name, anchor_hit.anchor, 6, 1, true)
+
+      if not drifted then
+        beach.continuation = anchor_hit.anchor
+        -- Loop continues from the failed anchor on the same ray.
       else
-        outcome = "no landing"
+        local drift_distance_sq = distance_sq(drifted, anchor_hit.anchor)
+        local drift_distance = math.sqrt(drift_distance_sq)
+
+        if debug_on then
+          local player = game.get_player(attempt.player_index)
+          if player and player.valid then
+            player.print(string.format(
+              "OMB drift: anchor @[%d,%d] → spawner @[%d,%d] (%.1f tiles inland)",
+              math.floor(anchor_hit.anchor.x), math.floor(anchor_hit.anchor.y),
+              math.floor(drifted.x), math.floor(drifted.y),
+              drift_distance))
+          end
+        end
+
+        if drift_distance_sq > (8 * 8) then
+          beach.continuation = anchor_hit.anchor
+        else
+          local min_migration_distance = setting("omb-min-migration-chunks") * 32
+          if not far_enough_from_source(beach.source, drifted, min_migration_distance) then
+            beach.continuation = anchor_hit.anchor
+          else
+            local min_player_distance = setting("omb-min-distance-from-player")
+            if not away_from_players(surface, drifted, min_player_distance) then
+              beach.continuation = anchor_hit.anchor
+            else
+              -- All synchronous guards passed. Issue the async beach-path
+              -- request; the callback either finalizes or sets continuation
+              -- and re-enters this function.
+              beach.current_anchor = anchor_hit.anchor
+              beach.current_drift = drifted
+              beach.water_crossed = anchor_hit.water_crossed
+
+              issue_path_request(surface, drifted, attempt.pollution_chunk,
+                                 "beach", surface_index, beach.spawner_name)
+              return
+            end
+          end
+        end
       end
-      player.print(string.format(
-        "OMB ray [fan %+d°] min=%d step=%d segments: %s → %s",
-        offset, min_water, scan_step,
-        (#parts > 0) and table.concat(parts, " ") or "none",
-        outcome))
     end
   end
-
-  if not anchor_hit then
-    beach.fan_i = beach.fan_i + 1
-    try_ray(surface_index, attempt)
-    return
-  end
-
-  -- Find the spawner's collision center as close to the shoreline anchor
-  -- as possible. Radius 6 is just enough to clear a 5x5 spawner footprint
-  -- off the water. The drift cap below (8 tiles) then rejects rays whose
-  -- nearest valid spot is further inland than a typical spawner half-width +
-  -- slack — keeping beachheads on the shoreline instead of walking them in.
-  local drifted = surface.find_non_colliding_position(
-    beach.spawner_name, anchor_hit.anchor, 6, 1, true)
-
-  if not drifted then
-    beach.fan_i = beach.fan_i + 1
-    try_ray(surface_index, attempt)
-    return
-  end
-
-  local drift_distance_sq = distance_sq(drifted, anchor_hit.anchor)
-  local drift_distance = math.sqrt(drift_distance_sq)
-
-  if setting("omb-debug") and attempt.force_run and attempt.player_index then
-    local player = game.get_player(attempt.player_index)
-    if player and player.valid then
-      player.print(string.format(
-        "OMB drift: anchor @[%d,%d] → spawner @[%d,%d] (%.1f tiles inland)",
-        math.floor(anchor_hit.anchor.x), math.floor(anchor_hit.anchor.y),
-        math.floor(drifted.x), math.floor(drifted.y),
-        drift_distance))
-    end
-  end
-
-  if drift_distance_sq > (8 * 8) then
-    beach.fan_i = beach.fan_i + 1
-    try_ray(surface_index, attempt)
-    return
-  end
-
-  -- Check the min-migration-distance guard too, otherwise we can drop a
-  -- beachhead on a short hop across a river that the pathfinder grudgingly
-  -- accepts but the player would find spammy.
-  local min_migration_distance = setting("omb-min-migration-chunks") * 32
-  if not far_enough_from_source(beach.source, drifted, min_migration_distance) then
-    beach.fan_i = beach.fan_i + 1
-    try_ray(surface_index, attempt)
-    return
-  end
-
-  -- Don't drop beachheads directly on a connected player either.
-  local min_player_distance = setting("omb-min-distance-from-player")
-  if not away_from_players(surface, drifted, min_player_distance) then
-    beach.fan_i = beach.fan_i + 1
-    try_ray(surface_index, attempt)
-    return
-  end
-
-  beach.current_anchor = anchor_hit.anchor
-  beach.current_drift = drifted
-  beach.water_crossed = anchor_hit.water_crossed
-
-  issue_path_request(surface, drifted, attempt.pollution_chunk,
-                     "beach", surface_index, beach.spawner_name)
 end
 
-local function advance_ray_fan(surface_index, attempt)
-  attempt.beach.fan_i = attempt.beach.fan_i + 1
+-- Kept as a helper for call sites (finalize's placed==0 race fallback) that
+-- want to continue scanning past a given anchor without advancing the fan.
+local function advance_ray_past(surface_index, attempt, failed_anchor)
+  attempt.beach.continuation = failed_anchor
   try_ray(surface_index, attempt)
 end
 
@@ -1011,8 +1041,10 @@ local finalize_beachhead_spawn = function(surface_index, attempt)
   local placed, placed_position = place_beachhead(surface, landfall, spawner_names)
 
   if placed <= 0 then
-    -- Rare race with chunk modification. Try the next ray.
-    advance_ray_fan(surface_index, attempt)
+    -- Rare race with chunk modification. Continue the same ray past this
+    -- failed landing instead of jumping to the next fan offset — the
+    -- failed position doesn't reveal anything about the other directions.
+    advance_ray_past(surface_index, attempt, attempt.beach.current_anchor)
     return
   end
 
@@ -1054,11 +1086,15 @@ local finalize_beachhead_spawn = function(surface_index, attempt)
   surface_state(surface).attempt = nil
 end
 
--- resolve_beach stays a stub here; filled in Task 9.
 local function resolve_beach(surface_index, attempt, success)
   if not attempt.beach then return end
   if not success then
-    advance_ray_fan(surface_index, attempt)
+    -- Beach-path pathfinder couldn't route from the landing to the pollution
+    -- chunk — the landing is on the same marooned landmass as the source.
+    -- Continue the SAME ray past this failed anchor to find a subsequent
+    -- water→land transition; advancing the fan here would skip over a ray
+    -- that just needed to walk past a mini-islet.
+    advance_ray_past(surface_index, attempt, attempt.beach.current_anchor)
     return
   end
 
